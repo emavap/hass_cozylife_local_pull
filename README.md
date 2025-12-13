@@ -1,7 +1,7 @@
 # CozyLife & Home Assistant 
 
 CozyLife Assistant integration is developed for controlling CozyLife devices using local net, officially 
-maintained by the CozyLife Team.
+maintained by JoshAtticus.
 
 
 ## Supported Device Types
@@ -17,7 +17,7 @@ maintained by the CozyLife Team.
 * clone the repo to the custom_components directory
 * configuration.yaml
 ```
-hass_cozylife_local_pull:
+hass_cozylife:
    lang: en
    ip:
      - "192.168.1.99"

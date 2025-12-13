@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 import json
-import socket
-import time
-from typing import Optional, Union, Any
+import asyncio
 import logging
+from typing import Optional, Union, Any
 from .utils import get_pid_list, get_sn
-import threading
 
 CMD_INFO = 0
 CMD_QUERY = 2
@@ -17,72 +15,47 @@ _LOGGER = logging.getLogger(__name__)
 class tcp_client(object):
     """
     Represents a device
-    send:{"cmd":0,"pv":0,"sn":"1636463553873","msg":{}}
-    receiver:{"cmd":0,"pv":0,"sn":"1636463553873","msg":{"did":"629168597cb94c4c1d8f","dtp":"02","pid":"e2s64v",
-    "mac":"7cb94c4c1d8f","ip":"192.168.123.57","rssi":-33,"sv":"1.0.0","hv":"0.0.1"},"res":0}
-
-    send:{"cmd":2,"pv":0,"sn":"1636463611798","msg":{"attr":[0]}}
-    receiver:{"cmd":2,"pv":0,"sn":"1636463611798","msg":{"attr":[1,2,3,4,5,6],"data":{"1":0,"2":0,"3":1000,"4":1000,
-    "5":65535,"6":65535}},"res":0}
-    
-    send:{"cmd":3,"pv":0,"sn":"1636463662455","msg":{"attr":[1],"data":{"1":0}}}
-    receiver:{"cmd":3,"pv":0,"sn":"1636463662455","msg":{"attr":[1],"data":{"1":0}},"res":0}
-    receiver:{"cmd":10,"pv":0,"sn":"1636463664000","res":0,"msg":{"attr":[1,2,3,4,5,6],"data":{"1":0,"2":0,"3":1000,
-    "4":1000,"5":65535,"6":65535}}}
     """
     _ip = str
     _port = 5555
-    _connect = socket
     
     _device_id = str
-    # _device_key = str
     _pid = str
     _device_type_code = str
     _icon = str
     _device_model_name = str
     _dpid = []
-    # last sn
     _sn = str
     
     def __init__(self, ip):
         self._ip = ip
-        self._connect = None  # Initialize _connect as None
-        self._close_connection() 
-        self._reconnect()
+        self._reader = None
+        self._writer = None
+        self._lock = asyncio.Lock()
     
-    def _close_connection(self):
-        if self._connect:
+    async def connect(self):
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self._ip, self._port), timeout=3
+            )
+            await self._device_info()
+            return True
+        except Exception as e:
+            _LOGGER.warning(f'Connection failed to {self._ip}: {e}')
+            return False
+
+    async def _close_connection(self):
+        if self._writer:
             try:
-                self._connect.close()
+                self._writer.close()
+                await self._writer.wait_closed()
             except Exception as e:
                 _LOGGER.error(f'Error while closing the connection: {e}')
-            self._connect = None
-        
-    def _reconnect(self):
-        def reconnect_thread():            
-            while True:
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(3)
-                    s.connect((self._ip, self._port))
-                    self._connect = s
-                    self._device_info()
-                    return
-                except Exception as e:
-                    _LOGGER.info(f'Reconnection failed: {e}')
-                    time.sleep(60)  # Wait for 60 seconds before trying to reconnect
-
-        thread = threading.Thread(target=reconnect_thread)
-        thread.daemon = True  # This makes the thread exit when the main program exits
-        thread.start()
-
+            self._writer = None
+            self._reader = None
 
     @property
     def check(self) -> bool:
-        """
-        Determine whether the device is filtered
-        :return:
-        """
         return True
     
     @property
@@ -105,27 +78,24 @@ class tcp_client(object):
     def device_id(self):
         return self._device_id
     
-    def _device_info(self) -> None:
+    async def _device_info(self) -> None:
         """
         get info for device model
-        :return:
         """
-        self._only_send(CMD_INFO, {})
+        await self._only_send(CMD_INFO, {})
         try:
-            resp = self._connect.recv(1024)
+            resp = await self._reader.read(1024)
             resp_json = json.loads(resp.strip())            
-        except:
-            _LOGGER.info('_device_info.recv.error')
+        except Exception as e:
+            _LOGGER.info(f'_device_info.recv.error: {e}')
             return None
         
-        if resp_json.get('msg') is None or type(resp_json['msg']) is not dict:
+        if resp_json.get('msg') is None or not isinstance(resp_json['msg'], dict):
             _LOGGER.info('_device_info.recv.error1')
-            
             return None
         
         if resp_json['msg'].get('did') is None:
             _LOGGER.info('_device_info.recv.error2')
-            
             return None
 
         self._device_id = resp_json['msg']['did']
@@ -151,20 +121,9 @@ class tcp_client(object):
                 self._device_type_code = item['c']                
                 break
         
-        # _LOGGER.info(pid_list)
-        _LOGGER.info(self._device_id)
-        _LOGGER.info(self._device_type_code)
-        _LOGGER.info(self._pid)
-        _LOGGER.info(self._device_model_name)
-        _LOGGER.info(self._icon)
+        _LOGGER.info(f"Device Info: {self._device_id}, {self._device_type_code}, {self._pid}, {self._device_model_name}")
     
     def _get_package(self, cmd: int, payload: dict) -> bytes:
-        """
-        package message
-        :param cmd:int:
-        :param payload:
-        :return:
-        """
         self._sn = get_sn()
         if CMD_SET == cmd:
             message = {
@@ -196,65 +155,66 @@ class tcp_client(object):
             raise Exception('CMD is not valid')
         
         payload_str = json.dumps(message, separators=(',', ':',))
-        _LOGGER.info(f'_package={payload_str}')
+        _LOGGER.debug(f'_package={payload_str}')
         return bytes(payload_str + "\r\n", encoding='utf8')
     
-    def _send_receiver(self, cmd: int, payload: dict) -> Union[dict, Any]:
-        """
-        send & receiver
-        :param cmd:
-        :param payload:
-        :return:
-        """
-        self._connect.send(self._get_package(cmd, payload))
+    async def _send_receiver(self, cmd: int, payload: dict) -> Union[dict, Any]:
+        async with self._lock:
+            if not self._writer:
+                if not await self.connect():
+                    return {}
+
+            try:
+                self._writer.write(self._get_package(cmd, payload))
+                await self._writer.drain()
+                
+                i = 10
+                while i > 0:
+                    try:
+                        res = await asyncio.wait_for(self._reader.read(1024), timeout=2)
+                    except asyncio.TimeoutError:
+                        _LOGGER.debug("Timeout waiting for response")
+                        break
+                        
+                    i -= 1
+                    res_str = res.decode('utf-8', errors='ignore')
+                    if self._sn in res_str:
+                        try:
+                            payload = json.loads(res_str.strip())
+                        except json.JSONDecodeError:
+                            continue
+                            
+                        if payload is None or len(payload) == 0:
+                            return {}
+
+                        if payload.get('msg') is None or not isinstance(payload['msg'], dict):
+                            return {}
+
+                        if payload['msg'].get('data') is None or not isinstance(payload['msg']['data'], dict):
+                            return {}
+
+                        return payload['msg']['data']
+
+                return {}
+
+            except Exception as e:
+                _LOGGER.info(f'_send_receiver error: {e}')
+                await self._close_connection()
+                return {}
+    
+    async def _only_send(self, cmd: int, payload: dict) -> None:
+        if not self._writer:
+             pass
+             
         try:
-            i = 10
-            while i > 0:
-                res = self._connect.recv(1024)
-                # print(f'res={res},sn={self._sn},{self._sn in str(res)}')
-                i -= 1
-                #only allow same sn
-                if self._sn in str(res):
-                    payload = json.loads(res.strip())
-                    if payload is None or len(payload) == 0:
-                        return {}
-
-                    if payload.get('msg') is None or type(payload['msg']) is not dict:
-                        return {}
-
-                    if payload['msg'].get('data') is None or type(payload['msg']['data']) is not dict:
-                        return {}
-
-                    return payload['msg']['data']
-
-            return {}
-
+            self._writer.write(self._get_package(cmd, payload))
+            await self._writer.drain()
         except Exception as e:
-            _LOGGER.info(f'_only_send.recv.error: {e}')
-            self._reconnect()  # Reconnect on exception
-            return {}
-    
-    def _only_send(self, cmd: int, payload: dict) -> None:
-        """
-        send but not receiver
-        :param cmd:
-        :param payload:
-        :return:
-        """
-        self._connect.send(self._get_package(cmd, payload))
-    
-    def control(self, payload: dict) -> bool:
-        """
-        control use dpid
-        :param payload:
-        :return:
-        """
-        self._only_send(CMD_SET, payload)
+             _LOGGER.error(f"Send failed: {e}")
+
+    async def control(self, payload: dict) -> bool:
+        await self._only_send(CMD_SET, payload)
         return True
     
-    def query(self) -> dict:
-        """
-        query device state
-        :return:
-        """
-        return self._send_receiver(CMD_QUERY, {})
+    async def query(self) -> dict:
+        return await self._send_receiver(CMD_QUERY, {})

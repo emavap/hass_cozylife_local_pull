@@ -25,15 +25,14 @@ _LOGGER = logging.getLogger(__name__)
 _LOGGER.info('switch')
 
 
-def setup_platform(
+async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
-    add_entities: AddEntitiesCallback,
+    async_add_entities: AddEntitiesCallback,
     discovery_info: DiscoveryInfoType | None = None
 ) -> None:
     """Set up the sensor platform."""
     # We only want this platform to be set up via discovery.
-    # logging.info('setup_platform', hass, config, add_entities, discovery_info)
     _LOGGER.info('setup_platform')
     _LOGGER.info(f'ip={hass.data[DOMAIN]}')
     
@@ -46,7 +45,7 @@ def setup_platform(
         if SWITCH_TYPE_CODE == item.device_type_code:
             switchs.append(CozyLifeSwitch(item))
     
-    add_entities(switchs)
+    async_add_entities(switchs)
 
 
 class CozyLifeSwitch(SwitchEntity):
@@ -59,11 +58,15 @@ class CozyLifeSwitch(SwitchEntity):
         self._tcp_client = tcp_client
         self._unique_id = tcp_client.device_id
         self._name = tcp_client.device_model_name + ' ' + tcp_client.device_id[-4:]
-        self._refresh_state()
+        
+    async def async_added_to_hass(self) -> None:
+        await self._tcp_client.connect()
+        await self.async_update()
     
-    def _refresh_state(self):
-        self._state = self._tcp_client.query()
-        self._attr_is_on = 0 != self._state['1']
+    async def async_update(self):
+        self._state = await self._tcp_client.query()
+        if self._state:
+            self._attr_is_on = 0 != self._state.get('1', 0)
     
     @property
     def name(self) -> str:
@@ -77,9 +80,6 @@ class CozyLifeSwitch(SwitchEntity):
     @property
     def is_on(self) -> bool:
         """Return True if entity is on."""
-        self._attr_is_on = True
-
-        self._refresh_state()
         return self._attr_is_on
     
     @property
@@ -87,17 +87,18 @@ class CozyLifeSwitch(SwitchEntity):
         """Return a unique ID."""
         return self._unique_id
     
-    def turn_on(self, **kwargs: Any) -> None:
+    async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the entity on."""
         self._attr_is_on = True
         _LOGGER.info(f'turn_on:{kwargs}')
-        self._tcp_client.control({'1': 255})
-        return None
-        raise NotImplementedError()
+        await self._tcp_client.control({'1': 255})
+        await self.async_update()
     
-    def turn_off(self, **kwargs: Any) -> None:
+    async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
         self._attr_is_on = False
+        await self._tcp_client.control({'1': 0})
+        await self.async_update()
         _LOGGER.info('turn_off')
         self._tcp_client.control({'1': 0})
         return None
