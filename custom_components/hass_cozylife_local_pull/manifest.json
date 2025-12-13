@@ -1,5 +1,5 @@
 {
-  "domain": "hass_cozylife",
+  "domain": "hass_cozylife_local_pull",
   "name": "CozyLife",
   "documentation": "https://github.com/JoshAtticus/hass_cozylife_local_pull",
   "issue_tracker": "https://github.com/JoshAtticus/hass_cozylife_local_pull/issues",
