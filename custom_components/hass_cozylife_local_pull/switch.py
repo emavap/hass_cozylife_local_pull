@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -25,6 +26,20 @@ _LOGGER = logging.getLogger(__name__)
 _LOGGER.info('switch')
 
 
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the CozyLife Switch from a config entry."""
+    switchs = []
+    for item in hass.data[DOMAIN][config_entry.entry_id]['tcp_client']:
+        if SWITCH_TYPE_CODE == item.device_type_code:
+            switchs.append(CozyLifeSwitch(item))
+    
+    async_add_entities(switchs)
+
+
 async def async_setup_platform(
     hass: HomeAssistant,
     config: ConfigType,
@@ -39,13 +54,13 @@ async def async_setup_platform(
     if discovery_info is None:
         return
 
-
-    switchs = []
-    for item in hass.data[DOMAIN]['tcp_client']:
-        if SWITCH_TYPE_CODE == item.device_type_code:
-            switchs.append(CozyLifeSwitch(item))
-    
-    async_add_entities(switchs)
+    if 'tcp_client' in hass.data[DOMAIN]:
+        switchs = []
+        for item in hass.data[DOMAIN]['tcp_client']:
+            if SWITCH_TYPE_CODE == item.device_type_code:
+                switchs.append(CozyLifeSwitch(item))
+        
+        async_add_entities(switchs)
 
 
 class CozyLifeSwitch(SwitchEntity):

@@ -12,6 +12,7 @@ from homeassistant.components.light import (
     ColorMode,
     LightEntity,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
@@ -24,6 +25,19 @@ from .tcp_client import tcp_client
 import logging
 
 _LOGGER = logging.getLogger(__name__)
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the CozyLife Light from a config entry."""
+    lights = []
+    for item in hass.data[DOMAIN][config_entry.entry_id]['tcp_client']:
+        if LIGHT_TYPE_CODE == item.device_type_code:
+            lights.append(CozyLifeLight(item))
+    
+    async_add_entities(lights)
 
 async def async_setup_platform(
     hass: HomeAssistant,
@@ -39,12 +53,15 @@ async def async_setup_platform(
     if discovery_info is None:
         return
     
-    lights = []
-    for item in hass.data[DOMAIN]['tcp_client']:
-        if LIGHT_TYPE_CODE == item.device_type_code:
-            lights.append(CozyLifeLight(item))
-    
-    async_add_entities(lights)
+    # This legacy method might fail if hass.data[DOMAIN] is not populated as expected
+    # But we keep it for reference or if we decide to support legacy setup later.
+    if 'tcp_client' in hass.data[DOMAIN]:
+        lights = []
+        for item in hass.data[DOMAIN]['tcp_client']:
+            if LIGHT_TYPE_CODE == item.device_type_code:
+                lights.append(CozyLifeLight(item))
+        
+        async_add_entities(lights)
 
 
 class CozyLifeLight(LightEntity):
