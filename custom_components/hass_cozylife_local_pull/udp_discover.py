@@ -49,7 +49,7 @@ def get_ip() -> list:
         _LOGGER.info(f'first udp.receiver:{addr[0]}')
         break
     else:
-        _LOGGER.warning('cannot find any device')
+        _LOGGER.debug('UDP discovery found no devices')
         return []
     
     i = 255

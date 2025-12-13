@@ -7,7 +7,7 @@ from homeassistant.components.light import LightEntity
 # from homeassistant.components.light import *
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
-    ATTR_COLOR_TEMP,
+    ATTR_COLOR_TEMP_KELVIN,
     ATTR_HS_COLOR,
     ColorMode,
     LightEntity,
@@ -69,6 +69,8 @@ class CozyLifeLight(LightEntity):
     
     _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
     _attr_color_mode = ColorMode.BRIGHTNESS
+    _attr_min_color_temp_kelvin = 2000
+    _attr_max_color_temp_kelvin = 6500
     
     def __init__(self, tcp_client: tcp_client) -> None:
         """Initialize the sensor."""
@@ -87,10 +89,10 @@ class CozyLifeLight(LightEntity):
                      f'{self._attr_supported_color_modes}.dpid={self._tcp_client.dpid}')
         
         supported = {ColorMode.BRIGHTNESS}
-        if 3 in self._tcp_client.dpid:
+        if '3' in self._tcp_client.dpid:
             supported.add(ColorMode.COLOR_TEMP)
         
-        if 5 in self._tcp_client.dpid or 6 in self._tcp_client.dpid:
+        if '5' in self._tcp_client.dpid or '6' in self._tcp_client.dpid:
             supported.add(ColorMode.HS)
             
         # Clean up supported modes
@@ -130,7 +132,12 @@ class CozyLifeLight(LightEntity):
             self._attr_hs_color = (int(self._state['5']), int(self._state['6'] / 10))
         
         if '3' in self._state:
-            self._attr_color_temp = 500 - int(self._state['3'] / 2)
+            # 0-1000 map to 500-153 mireds (2000K-6500K)
+            # mireds = 500 - (value / 2)
+            mireds = 500 - int(self._state['3'] / 2)
+            self._attr_color_temp = mireds
+            if mireds > 0:
+                self._attr_color_temp_kelvin = int(1000000 / mireds)
     
     @property
     def name(self) -> str:
@@ -147,10 +154,10 @@ class CozyLifeLight(LightEntity):
         return self._attr_is_on
     
     @property
-    def color_temp(self) -> int | None:
-        """Return the CT color value in mireds."""
-        return self._attr_color_temp
-    
+    def color_temp_kelvin(self) -> int | None:
+        """Return the CT color value in Kelvin."""
+        return self._attr_color_temp_kelvin
+
     @property
     def unique_id(self) -> str | None:
         """Return a unique ID."""
@@ -161,7 +168,7 @@ class CozyLifeLight(LightEntity):
         self._attr_is_on = True
         brightness = kwargs.get(ATTR_BRIGHTNESS)
         # 153 ~ 500
-        colortemp = kwargs.get(ATTR_COLOR_TEMP)
+        colortemp_kelvin = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
         # tuple
         hs_color = kwargs.get(ATTR_HS_COLOR)
         
@@ -177,8 +184,14 @@ class CozyLifeLight(LightEntity):
             payload['6'] = int(hs_color[1] * 10)
             self._attr_hs_color = hs_color
         
-        if colortemp is not None:
-            payload['3'] = 1000 - colortemp * 2
+        if colortemp_kelvin is not None:
+            # mireds = 1000000 / kelvin
+            # value = 1000 - mireds * 2
+            mireds = 1000000 / colortemp_kelvin
+            val = int(1000 - mireds * 2)
+            if val < 0: val = 0
+            if val > 1000: val = 1000
+            payload['3'] = val
         
         await self._tcp_client.control(payload)
         await self.async_update()

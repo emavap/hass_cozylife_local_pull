@@ -39,6 +39,12 @@ class tcp_client(object):
                 asyncio.open_connection(self._ip, self._port), timeout=3
             )
             await self._device_info()
+            
+            # If dpid is still empty, try to query to get attributes
+            if not self._dpid:
+                _LOGGER.info(f"DPID empty for {self._ip}, querying device for attributes")
+                await self.query()
+                
             return True
         except Exception as e:
             _LOGGER.warning(f'Connection failed to {self._ip}: {e}')
@@ -114,7 +120,7 @@ class tcp_client(object):
                     match = True
                     self._icon = item1['i']
                     self._device_model_name = item1['n']
-                    self._dpid = item1['dpid']
+                    self._dpid = [str(x) for x in item1['dpid']]
                     break
             
             if match:
@@ -189,6 +195,14 @@ class tcp_client(object):
 
                         if payload.get('msg') is None or not isinstance(payload['msg'], dict):
                             return {}
+                        
+                        # Capture attr if present to populate dpid if missing
+                        if 'attr' in payload['msg'] and isinstance(payload['msg']['attr'], list):
+                            # Only update if we don't have them or if we want to ensure we have the latest
+                            # But usually _device_info sets it. If _device_info failed to match PID, this is the fallback.
+                            if not self._dpid:
+                                self._dpid = [str(x) for x in payload['msg']['attr']]
+                                _LOGGER.info(f"Discovered DPIDs from query: {self._dpid}")
 
                         if payload['msg'].get('data') is None or not isinstance(payload['msg']['data'], dict):
                             return {}
