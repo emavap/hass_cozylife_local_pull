@@ -28,6 +28,9 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
-                vol.Optional("IP Address(es)"): str,
+            vol.Optional("ips"): str,
             }),
+            description_placeholders={
+            "ips": "IP addresses (comma separated)",
+            },
         )
