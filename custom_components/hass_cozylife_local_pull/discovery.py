@@ -34,7 +34,7 @@ async def async_discover_devices(hass: HomeAssistant) -> list[str]:
                 host_info = await loop.run_in_executor(None, socket.gethostbyaddr, ip_addr)
                 hostname = host_info[0]
                 if hostname and hostname.startswith("CozyLife_"):
-                    _LOGGER.info(f"Found CozyLife device by hostname at {ip_addr}: {hostname}")
+                    _LOGGER.debug(f"Found CozyLife device by hostname at {ip_addr}: {hostname}")
                     found_ips.append(ip_addr)
             except socket.herror:
                 # Host not found

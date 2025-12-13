@@ -28,7 +28,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up CozyLife Local from a config entry."""
-    _LOGGER.info('async_setup_entry start')
+    _LOGGER.debug('async_setup_entry start')
     
     # UDP Discovery (run in executor)
     ip_udp = await hass.async_add_executor_job(get_ip)
@@ -44,10 +44,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ip_list = list(set(ip_udp + ip_hostname + ip_config))
 
     if 0 == len(ip_list):
-        _LOGGER.info('discover nothing')
+        _LOGGER.info('Discovery found no devices, but integration will load. Check logs for details.')
         # We continue to allow the integration to load even if no devices found initially
     
-    _LOGGER.info(f'try connect ip_list: {ip_list}')
+    _LOGGER.debug(f'try connect ip_list: {ip_list}')
     await async_get_pid_list(LANG)
 
     clients = [tcp_client(item) for item in ip_list]
@@ -59,6 +59,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     # Filter clients that have valid device info
     valid_clients = [c for c in clients if c.device_type_code]
+    
+    _LOGGER.debug(f"Found {len(valid_clients)} valid devices out of {len(clients)} candidates")
 
     hass.data[DOMAIN][entry.entry_id] = {
         'tcp_client': valid_clients,

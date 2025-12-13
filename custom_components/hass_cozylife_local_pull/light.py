@@ -85,7 +85,7 @@ class CozyLifeLight(LightEntity):
         self._update_features()
         
     def _update_features(self):
-        _LOGGER.info(f'before:{self._unique_id}._attr_color_mode={self._attr_color_mode}._attr_supported_color_modes='
+        _LOGGER.debug(f'before:{self._unique_id}._attr_color_mode={self._attr_color_mode}._attr_supported_color_modes='
                      f'{self._attr_supported_color_modes}.dpid={self._tcp_client.dpid}')
         
         supported = {ColorMode.BRIGHTNESS}
@@ -109,7 +109,7 @@ class CozyLifeLight(LightEntity):
 
         self._attr_supported_color_modes = supported
         
-        _LOGGER.info(f'after:{self._unique_id}._attr_color_mode={self._attr_color_mode}._attr_supported_color_modes='
+        _LOGGER.debug(f'after:{self._unique_id}._attr_color_mode={self._attr_color_mode}._attr_supported_color_modes='
                      f'{self._attr_supported_color_modes}.dpid={self._tcp_client.dpid}')
     
     async def async_update(self):
@@ -172,7 +172,7 @@ class CozyLifeLight(LightEntity):
         # tuple
         hs_color = kwargs.get(ATTR_HS_COLOR)
         
-        _LOGGER.info(f'turn_on.kwargs={kwargs}')
+        _LOGGER.debug(f'turn_on.kwargs={kwargs}')
         
         payload = {'1': 255, '2': 0}
         if brightness is not None:
@@ -199,7 +199,7 @@ class CozyLifeLight(LightEntity):
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
         self._attr_is_on = False
-        _LOGGER.info(f'turn_off.kwargs={kwargs}')
+        _LOGGER.debug(f'turn_off.kwargs={kwargs}')
         await self._tcp_client.control({'1': 0})
         await self.async_update()
     

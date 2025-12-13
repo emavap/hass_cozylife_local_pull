@@ -88,26 +88,27 @@ class tcp_client(object):
         """
         get info for device model
         """
+        _LOGGER.debug(f"Getting device info for {self._ip}")
         await self._only_send(CMD_INFO, {})
         try:
             resp = await self._reader.read(1024)
             resp_json = json.loads(resp.strip())            
         except Exception as e:
-            _LOGGER.info(f'_device_info.recv.error: {e}')
+            _LOGGER.debug(f'_device_info.recv.error for {self._ip}: {e}')
             return None
         
         if resp_json.get('msg') is None or not isinstance(resp_json['msg'], dict):
-            _LOGGER.info('_device_info.recv.error1')
+            _LOGGER.debug(f'_device_info.recv.error1 for {self._ip}: Invalid response structure')
             return None
         
         if resp_json['msg'].get('did') is None:
-            _LOGGER.info('_device_info.recv.error2')
+            _LOGGER.debug(f'_device_info.recv.error2 for {self._ip}: Missing DID')
             return None
 
         self._device_id = resp_json['msg']['did']
         
         if resp_json['msg'].get('pid') is None:
-            _LOGGER.info('_device_info.recv.error3')
+            _LOGGER.debug(f'_device_info.recv.error3 for {self._ip}: Missing PID')
             return None
         
         self._pid = resp_json['msg']['pid']        
@@ -127,7 +128,7 @@ class tcp_client(object):
                 self._device_type_code = item['c']                
                 break
         
-        _LOGGER.info(f"Device Info: {self._device_id}, {self._device_type_code}, {self._pid}, {self._device_model_name}")
+        _LOGGER.debug(f"Device Info for {self._ip}: ID={self._device_id}, Type={self._device_type_code}, PID={self._pid}, Model={self._device_model_name}")
     
     def _get_package(self, cmd: int, payload: dict) -> bytes:
         self._sn = get_sn()
@@ -171,6 +172,7 @@ class tcp_client(object):
                     return {}
 
             try:
+                _LOGGER.debug(f"Sending command {cmd} to {self._ip} with payload {payload}")
                 self._writer.write(self._get_package(cmd, payload))
                 await self._writer.drain()
                 
@@ -179,15 +181,17 @@ class tcp_client(object):
                     try:
                         res = await asyncio.wait_for(self._reader.read(1024), timeout=2)
                     except asyncio.TimeoutError:
-                        _LOGGER.debug("Timeout waiting for response")
+                        _LOGGER.debug(f"Timeout waiting for response from {self._ip}")
                         break
                         
                     i -= 1
                     res_str = res.decode('utf-8', errors='ignore')
+                    _LOGGER.debug(f"Received from {self._ip}: {res_str}")
                     if self._sn in res_str:
                         try:
                             payload = json.loads(res_str.strip())
                         except json.JSONDecodeError:
+                            _LOGGER.debug(f"JSON decode error from {self._ip}")
                             continue
                             
                         if payload is None or len(payload) == 0:
@@ -212,7 +216,7 @@ class tcp_client(object):
                 return {}
 
             except Exception as e:
-                _LOGGER.info(f'_send_receiver error: {e}')
+                _LOGGER.debug(f'_send_receiver error for {self._ip}: {e}')
                 await self._close_connection()
                 return {}
     
@@ -221,10 +225,11 @@ class tcp_client(object):
              pass
              
         try:
+            _LOGGER.debug(f"Sending only command {cmd} to {self._ip}")
             self._writer.write(self._get_package(cmd, payload))
             await self._writer.drain()
         except Exception as e:
-             _LOGGER.error(f"Send failed: {e}")
+             _LOGGER.error(f"Send failed to {self._ip}: {e}")
 
     async def control(self, payload: dict) -> bool:
         await self._only_send(CMD_SET, payload)

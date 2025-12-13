@@ -1,9 +1,10 @@
 {
-  "domain": "hass_cozylife_local_pull",
-  "name": "CozyLife Local",
+  "domain": "hass_cozylife",
+  "name": "CozyLife",
   "documentation": "https://github.com/JoshAtticus/hass_cozylife_local_pull",
+  "issue_tracker": "https://github.com/JoshAtticus/hass_cozylife_local_pull/issues",
   "dependencies": [],
-  "codeowners": [],
+  "codeowners": ["@JoshAtticus"],
   "requirements": [],
   "iot_class": "local_polling",
   "version": "1.0.0",

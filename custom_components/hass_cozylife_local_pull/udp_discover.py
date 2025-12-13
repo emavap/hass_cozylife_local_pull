@@ -44,9 +44,9 @@ def get_ip() -> list:
         try:
             data, addr = server.recvfrom(1024, socket.MSG_PEEK)
         except Exception as err:
-            _LOGGER.info(f'{i}/{max} try, udp timeout')
+            _LOGGER.debug(f'{i}/{max} try, udp timeout')
             continue
-        _LOGGER.info(f'first udp.receiver:{addr[0]}')
+        _LOGGER.debug(f'first udp.receiver:{addr[0]}')
         break
     else:
         _LOGGER.debug('UDP discovery found no devices')
