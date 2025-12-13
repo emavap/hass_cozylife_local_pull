@@ -3,7 +3,7 @@ import json
 import asyncio
 import logging
 from typing import Optional, Union, Any
-from .utils import get_pid_list, get_sn
+from .utils import async_get_pid_list, get_sn
 
 CMD_INFO = 0
 CMD_QUERY = 2
@@ -105,7 +105,7 @@ class tcp_client(object):
             return None
         
         self._pid = resp_json['msg']['pid']        
-        pid_list = get_pid_list()
+        pid_list = await async_get_pid_list()
 
         for item in pid_list:
             match = False

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import time
-import requests
+import aiohttp
 import logging
 from .const import (
     API_DOMAIN,
@@ -22,7 +22,7 @@ def get_sn() -> str:
 _CACHE_PID = []
 
 
-def get_pid_list(lang='en') -> list:
+async def async_get_pid_list(lang='en') -> list:
     """
     http://doc.doit/project-12/doc-95/
     :param lang:
@@ -36,17 +36,23 @@ def get_pid_list(lang='en') -> list:
         _LOGGER.info(f'not support lang={lang}, will set lang={LANG}')
         lang = LANG
 
-    res = requests.get(f'http://{API_DOMAIN}/api/v2/device_product/model', {
-        'lang': lang
-    }, timeout=3)
+    url = f'http://{API_DOMAIN}/api/v2/device_product/model'
+    params = {'lang': lang}
     
-    if 200 != res.status_code:
-        _LOGGER.info('get_pid_list.result is none')
-        return []
     try:
-        pid_list = json.loads(res.content)
-    except:
-        _LOGGER.info('get_pid_list.result is not json')
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=3) as res:
+                if res.status != 200:
+                    _LOGGER.info('get_pid_list.result is none')
+                    return []
+                content = await res.text()
+                try:
+                    pid_list = json.loads(content)
+                except:
+                    _LOGGER.info('get_pid_list.result is not json')
+                    return []
+    except Exception as e:
+        _LOGGER.info(f'get_pid_list error: {e}')
         return []
     
     if pid_list.get('ret') is None:

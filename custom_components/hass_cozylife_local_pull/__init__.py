@@ -10,7 +10,7 @@ from .const import (
     DOMAIN,
     LANG
 )
-from .utils import get_pid_list
+from .utils import async_get_pid_list
 from .udp_discover import get_ip
 from .discovery import async_discover_devices
 from .tcp_client import tcp_client
@@ -36,15 +36,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Hostname Discovery
     ip_hostname = await async_discover_devices(hass)
     
+    # Config IPs
+    ip_config_str = entry.data.get('ips', '')
+    ip_config = [ip.strip() for ip in ip_config_str.split(',') if ip.strip()]
+    
     # Merge IPs
-    ip_list = list(set(ip_udp + ip_hostname))
+    ip_list = list(set(ip_udp + ip_hostname + ip_config))
 
     if 0 == len(ip_list):
         _LOGGER.info('discover nothing')
         # We continue to allow the integration to load even if no devices found initially
     
     _LOGGER.info(f'try connect ip_list: {ip_list}')
-    get_pid_list(LANG)
+    await async_get_pid_list(LANG)
 
     clients = [tcp_client(item) for item in ip_list]
     
