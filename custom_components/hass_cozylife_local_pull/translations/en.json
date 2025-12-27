@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CozyLife Local Setup",
+        "description": "Configure the CozyLife Local integration. Devices are automatically discovered via UDP broadcast and hostname scanning. You can optionally specify additional IP addresses manually.",
+        "data": {
+          "ips": "Manual IP addresses (comma separated, optional)"
+        },
+        "data_description": {
+          "ips": "Enter IP addresses of devices that may not be discovered automatically, separated by commas. Leave empty to use automatic discovery only."
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single instance of CozyLife Local is allowed."
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to device.",
+      "unknown": "Unexpected error occurred."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "CozyLife Local Options",
+        "description": "Add or modify manually configured IP addresses. The integration will reload to discover new devices.",
+        "data": {
+          "ips": "Manual IP addresses (comma separated)"
+        },
+        "data_description": {
+          "ips": "Enter IP addresses of devices separated by commas. These will be added to automatically discovered devices."
+        }
+      }
+    }
+  }
+}
+

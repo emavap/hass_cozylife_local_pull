@@ -1,10 +1,6 @@
-"""Platform for sensor integration."""
+"""Platform for CozyLife light integration."""
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.components.switch import SwitchEntity
-from homeassistant.components.light import LightEntity
-# from homeassistant.components.light import *
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_COLOR_TEMP_KELVIN,
@@ -16,12 +12,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from typing import Any
+from typing import Any, Optional, Set, Tuple, Dict
 from .const import (
     DOMAIN,
     LIGHT_TYPE_CODE,
 )
-from .tcp_client import tcp_client
+from .tcp_client import TcpClient
 import logging
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,72 +61,89 @@ async def async_setup_platform(
 
 
 class CozyLifeLight(LightEntity):
-    _tcp_client = None
-    
-    _attr_supported_color_modes = {ColorMode.BRIGHTNESS}
-    _attr_color_mode = ColorMode.BRIGHTNESS
-    _attr_min_color_temp_kelvin = 2000
-    _attr_max_color_temp_kelvin = 6500
-    
-    def __init__(self, tcp_client: tcp_client) -> None:
-        """Initialize the sensor."""
-        _LOGGER.info('__init__')
-        self._tcp_client = tcp_client
-        self._unique_id = tcp_client.device_id
-        self._name = tcp_client.device_model_name + ' ' + tcp_client.device_id[-4:]
-        
+    """Representation of a CozyLife light."""
+
+    _attr_min_color_temp_kelvin: int = 2000
+    _attr_max_color_temp_kelvin: int = 6500
+
+    def __init__(self, tcp_client: TcpClient) -> None:
+        """Initialize the light entity.
+
+        Args:
+            tcp_client: The TCP client for device communication.
+        """
+        _LOGGER.debug(f'Initializing CozyLifeLight for device {tcp_client.device_id}')
+        self._tcp_client: TcpClient = tcp_client
+        self._unique_id: str = tcp_client.device_id
+        self._name: str = f"{tcp_client.device_model_name} {tcp_client.device_id[-4:]}"
+
+        # Initialize state attributes
+        self._attr_is_on: bool = False
+        self._attr_brightness: Optional[int] = None
+        self._attr_hs_color: Optional[Tuple[float, float]] = None
+        self._attr_color_temp: Optional[int] = None
+        self._attr_color_temp_kelvin: Optional[int] = None
+        self._attr_supported_color_modes: Set[ColorMode] = {ColorMode.BRIGHTNESS}
+        self._attr_color_mode: ColorMode = ColorMode.BRIGHTNESS
+        self._state: Dict[str, Any] = {}
+
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
         await self._tcp_client.connect()
         self._update_features()
-        
-    def _update_features(self):
-        _LOGGER.debug(f'before:{self._unique_id}._attr_color_mode={self._attr_color_mode}._attr_supported_color_modes='
-                     f'{self._attr_supported_color_modes}.dpid={self._tcp_client.dpid}')
-        
-        supported = {ColorMode.BRIGHTNESS}
+
+    def _update_features(self) -> None:
+        """Update supported features based on device capabilities."""
+        _LOGGER.debug(
+            f'before:{self._unique_id}._attr_color_mode={self._attr_color_mode}.'
+            f'_attr_supported_color_modes={self._attr_supported_color_modes}.'
+            f'dpid={self._tcp_client.dpid}'
+        )
+
+        supported: Set[ColorMode] = {ColorMode.BRIGHTNESS}
         if '3' in self._tcp_client.dpid:
             supported.add(ColorMode.COLOR_TEMP)
-        
+
         if '5' in self._tcp_client.dpid or '6' in self._tcp_client.dpid:
             supported.add(ColorMode.HS)
-            
-        # Clean up supported modes
+
+        # Clean up supported modes - HS and COLOR_TEMP imply brightness
         if ColorMode.HS in supported:
-            if ColorMode.BRIGHTNESS in supported:
-                supported.remove(ColorMode.BRIGHTNESS)
+            supported.discard(ColorMode.BRIGHTNESS)
             self._attr_color_mode = ColorMode.HS
         elif ColorMode.COLOR_TEMP in supported:
-            if ColorMode.BRIGHTNESS in supported:
-                supported.remove(ColorMode.BRIGHTNESS)
+            supported.discard(ColorMode.BRIGHTNESS)
             self._attr_color_mode = ColorMode.COLOR_TEMP
         else:
             self._attr_color_mode = ColorMode.BRIGHTNESS
 
         self._attr_supported_color_modes = supported
-        
-        _LOGGER.debug(f'after:{self._unique_id}._attr_color_mode={self._attr_color_mode}._attr_supported_color_modes='
-                     f'{self._attr_supported_color_modes}.dpid={self._tcp_client.dpid}')
+
+        _LOGGER.debug(
+            f'after:{self._unique_id}._attr_color_mode={self._attr_color_mode}.'
+            f'_attr_supported_color_modes={self._attr_supported_color_modes}.'
+            f'dpid={self._tcp_client.dpid}'
+        )
     
-    async def async_update(self):
-        """
-        query device & set attr
-        :return:
-        """
+    async def async_update(self) -> None:
+        """Query device and update attributes."""
         self._state = await self._tcp_client.query()
         _LOGGER.debug(f'_state={self._state}')
-        
+
         if not self._state:
             return
 
-        self._attr_is_on = 0 < self._state.get('1', 0)
-        
+        self._attr_is_on = self._state.get('1', 0) > 0
+
         if '4' in self._state:
             self._attr_brightness = int(self._state['4'] / 4)
-        
-        if '5' in self._state:
-            self._attr_hs_color = (int(self._state['5']), int(self._state['6'] / 10))
-        
+
+        if '5' in self._state and '6' in self._state:
+            self._attr_hs_color = (
+                float(self._state['5']),
+                float(self._state['6']) / 10
+            )
+
         if '3' in self._state:
             # 0-1000 map to 500-153 mireds (2000K-6500K)
             # mireds = 500 - (value / 2)
@@ -138,92 +151,100 @@ class CozyLifeLight(LightEntity):
             self._attr_color_temp = mireds
             if mireds > 0:
                 self._attr_color_temp_kelvin = int(1000000 / mireds)
-    
+
     @property
     def name(self) -> str:
+        """Return the name of the light."""
         return self._name
-    
+
     @property
     def available(self) -> bool:
         """Return if the device is available."""
-        return True
-    
+        return self._tcp_client.available
+
     @property
     def is_on(self) -> bool:
         """Return True if entity is on."""
         return self._attr_is_on
-    
+
     @property
-    def color_temp_kelvin(self) -> int | None:
+    def color_temp_kelvin(self) -> Optional[int]:
         """Return the CT color value in Kelvin."""
         return self._attr_color_temp_kelvin
 
     @property
-    def unique_id(self) -> str | None:
+    def unique_id(self) -> str:
         """Return a unique ID."""
         return self._unique_id
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the entity on."""
-        self._attr_is_on = True
-        brightness = kwargs.get(ATTR_BRIGHTNESS)
-        # 153 ~ 500
-        colortemp_kelvin = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
-        # tuple
-        hs_color = kwargs.get(ATTR_HS_COLOR)
-        
+        brightness: Optional[int] = kwargs.get(ATTR_BRIGHTNESS)
+        colortemp_kelvin: Optional[int] = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
+        hs_color: Optional[Tuple[float, float]] = kwargs.get(ATTR_HS_COLOR)
+
         _LOGGER.debug(f'turn_on.kwargs={kwargs}')
-        
-        payload = {'1': 255, '2': 0}
+
+        payload: Dict[str, int] = {'1': 255, '2': 0}
         if brightness is not None:
             payload['4'] = brightness * 4
-            self._attr_brightness = brightness
-        
+
         if hs_color is not None:
             payload['5'] = int(hs_color[0])
             payload['6'] = int(hs_color[1] * 10)
-            self._attr_hs_color = hs_color
-        
+
         if colortemp_kelvin is not None:
             # mireds = 1000000 / kelvin
             # value = 1000 - mireds * 2
             mireds = 1000000 / colortemp_kelvin
-            val = int(1000 - mireds * 2)
-            if val < 0: val = 0
-            if val > 1000: val = 1000
+            val = max(0, min(1000, int(1000 - mireds * 2)))
             payload['3'] = val
-        
-        await self._tcp_client.control(payload)
-        await self.async_update()
-    
+
+        # Send control command - now waits for confirmation
+        success = await self._tcp_client.control(payload)
+
+        if success:
+            # Update local state optimistically
+            self._attr_is_on = True
+            if brightness is not None:
+                self._attr_brightness = brightness
+            if hs_color is not None:
+                self._attr_hs_color = hs_color
+            if colortemp_kelvin is not None:
+                self._attr_color_temp_kelvin = colortemp_kelvin
+
+            # Schedule async update in background (don't wait)
+            self.hass.async_create_task(self.async_update())
+        else:
+            _LOGGER.warning(f"Failed to turn on {self._name}")
+
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
-        self._attr_is_on = False
         _LOGGER.debug(f'turn_off.kwargs={kwargs}')
-        await self._tcp_client.control({'1': 0})
-        await self.async_update()
-    
+
+        # Send control command - now waits for confirmation
+        success = await self._tcp_client.control({'1': 0})
+
+        if success:
+            # Update local state optimistically
+            self._attr_is_on = False
+
+            # Schedule async update in background (don't wait)
+            self.hass.async_create_task(self.async_update())
+        else:
+            _LOGGER.warning(f"Failed to turn off {self._name}")
+
     @property
-    def hs_color(self) -> tuple[float, float] | None:
+    def hs_color(self) -> Optional[Tuple[float, float]]:
         """Return the hue and saturation color value [float, float]."""
         return self._attr_hs_color
-    
+
     @property
-    def brightness(self) -> int | None:
+    def brightness(self) -> Optional[int]:
         """Return the brightness of this light between 0..255."""
         return self._attr_brightness
-    
+
     @property
-    def color_mode(self) -> str | None:
+    def color_mode(self) -> Optional[ColorMode]:
         """Return the color mode of the light."""
         return self._attr_color_mode
-    
-    # def set_brightness(self, b):
-    #     _LOGGER.info('set_brightness')
-    #
-    #     self._attr_brightness = b
-    #
-    # def set_hs(self, hs_color, duration) -> None:
-    #     """Set bulb's color."""
-    #     _LOGGER.info('set_hs')
-    #     self._attr_hs_color = (hs_color[0], hs_color[1])
