@@ -31,6 +31,7 @@ class TcpClient:
 
         # Device info - initialized per instance to avoid shared state
         self._device_id: str = ""
+        self._device_name: str = ""  # User-given name from device
         self._pid: str = ""
         self._device_type_code: str = ""
         self._icon: str = ""
@@ -157,6 +158,15 @@ class TcpClient:
         return self._device_model_name
 
     @property
+    def device_name(self) -> str:
+        """Return the user-given device name.
+
+        Returns:
+            The user-given device name, or empty string if not set.
+        """
+        return self._device_name
+
+    @property
     def icon(self) -> str:
         """Return the device icon.
 
@@ -219,6 +229,10 @@ class TcpClient:
 
         self._device_id = resp_json['msg']['did']
 
+        # Get user-defined device name if available
+        self._device_name = resp_json['msg'].get('name', '')
+        _LOGGER.debug(f"Device response for {self._ip}: {resp_json['msg']}")
+
         if resp_json['msg'].get('pid') is None:
             _LOGGER.debug(f'_device_info.recv.error3 for {self._ip}: Missing PID')
             return None
@@ -240,7 +254,7 @@ class TcpClient:
                 self._device_type_code = item['c']
                 break
 
-        _LOGGER.debug(f"Device Info for {self._ip}: ID={self._device_id}, Type={self._device_type_code}, PID={self._pid}, Model={self._device_model_name}")
+        _LOGGER.debug(f"Device Info for {self._ip}: ID={self._device_id}, Name={self._device_name}, Type={self._device_type_code}, PID={self._pid}, Model={self._device_model_name}")
     
     def _get_package(self, cmd: int, payload: dict) -> bytes:
         self._sn = get_sn()
