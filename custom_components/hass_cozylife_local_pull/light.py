@@ -78,12 +78,8 @@ class CozyLifeLight(LightEntity):
         _LOGGER.debug(f'Initializing CozyLifeLight for device {tcp_client.device_id}')
         self._tcp_client: TcpClient = tcp_client
         self._unique_id: str = tcp_client.device_id
-        # Use user-given name if available, otherwise fall back to model name
-        self._device_name: str = (
-            tcp_client.device_name
-            or tcp_client.device_model_name
-            or "CozyLife Light"
-        )
+        # Use model name and type code as the display name
+        self._device_name: str = f"{tcp_client.device_model_name} ({tcp_client.device_type_code})"
         # Entity name set to None so HA uses device name directly
         self._attr_name: Optional[str] = None
 

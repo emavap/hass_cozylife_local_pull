@@ -17,8 +17,8 @@ class TestCozyLifeSwitch:
         """Create a mock TCP client."""
         client = MagicMock(spec=tcp_client)
         client.device_id = "test_switch_456"
-        client.device_name = "Kitchen Plug"  # User-given name
         client.device_model_name = "Test Switch"
+        client.device_type_code = "00"
         client.dpid = ['1']
         client.available = True
         client.connect = AsyncMock(return_value=True)
@@ -39,7 +39,7 @@ class TestCozyLifeSwitch:
 
         assert switch._tcp_client == mock_tcp_client
         assert switch._unique_id == "test_switch_456"
-        assert switch._device_name == "Kitchen Plug"  # Uses user-given name
+        assert switch._device_name == "Test Switch (00)"
 
     async def test_switch_added_to_hass(self, mock_tcp_client, mock_hass):
         """Test switch added to Home Assistant."""
@@ -149,7 +149,7 @@ class TestCozyLifeSwitch:
 
         assert switch.is_on is True
         assert switch._attr_name is None  # Entity name is None, uses device name
-        assert switch._device_name == "Kitchen Plug"  # Uses user-given name
+        assert switch._device_name == "Test Switch (00)"
         assert switch.unique_id == "test_switch_456"
 
         switch._attr_is_on = False
