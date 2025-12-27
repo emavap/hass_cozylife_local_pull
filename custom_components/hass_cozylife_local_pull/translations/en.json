@@ -23,15 +23,41 @@
   "options": {
     "step": {
       "init": {
-        "title": "CozyLife Local Options",
-        "description": "Add or modify manually configured IP addresses. The integration will reload to discover new devices.",
+        "title": "Manage Device IPs",
+        "description": "Currently configured: {current_count} IP address(es). Choose an action:",
+        "menu_options": {
+          "add_ip": "Add IP address",
+          "remove_ip": "Remove IP address",
+          "view_ips": "View configured IPs",
+          "done": "Done"
+        }
+      },
+      "add_ip": {
+        "title": "Add IP Address",
+        "description": "Enter the IP address of the CozyLife device you want to add.",
         "data": {
-          "ips": "Manual IP addresses (comma separated)"
+          "ip": "IP Address"
         },
         "data_description": {
-          "ips": "Enter IP addresses of devices separated by commas. These will be added to automatically discovered devices."
+          "ip": "Enter a valid IPv4 address (e.g., 192.168.1.100)"
         }
+      },
+      "remove_ip": {
+        "title": "Remove IP Address",
+        "description": "Select an IP address to remove from the configuration.",
+        "data": {
+          "ip": "Select IP to remove"
+        }
+      },
+      "view_ips": {
+        "title": "Configured IP Addresses",
+        "description": "Currently configured IP addresses:\n\n{ip_list}"
       }
+    },
+    "error": {
+      "ip_required": "Please enter an IP address.",
+      "invalid_ip": "Invalid IP address format. Use format: 192.168.1.100",
+      "ip_already_exists": "This IP address is already configured."
     }
   }
 }
