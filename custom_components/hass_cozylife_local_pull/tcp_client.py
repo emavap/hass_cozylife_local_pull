@@ -103,6 +103,15 @@ class TcpClient:
                 self._reader = None
         self._available = False
 
+    async def disconnect(self) -> None:
+        """Public method to disconnect from device.
+
+        Call this when unloading the integration to ensure clean shutdown.
+        """
+        async with self._lock:
+            await self._close_connection()
+            _LOGGER.debug(f"Disconnected from {self._ip}")
+
     def is_connected(self) -> bool:
         """Check if connection is active.
 
@@ -306,10 +315,10 @@ class TcpClient:
             await asyncio.wait_for(self._writer.drain(), timeout=3)
 
             # Wait for response with improved logic
-            max_attempts = 5
+            max_attempts = 3  # Reduced from 5 for faster failure detection
             for attempt in range(max_attempts):
                 try:
-                    res = await asyncio.wait_for(self._reader.read(1024), timeout=3)
+                    res = await asyncio.wait_for(self._reader.read(1024), timeout=2)  # Reduced from 3s
                     if not res:
                         _LOGGER.debug(f"Empty response from {self._ip}")
                         await self._close_connection()

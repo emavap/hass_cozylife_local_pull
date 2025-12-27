@@ -4,6 +4,7 @@ from __future__ import annotations
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from typing import Any, Dict, Optional
@@ -55,6 +56,9 @@ async def async_setup_platform(
 class CozyLifeSwitch(SwitchEntity):
     """Representation of a CozyLife switch."""
 
+    _attr_assumed_state: bool = True  # Use optimistic updates
+    _attr_has_entity_name: bool = True
+
     def __init__(self, tcp_client: TcpClient) -> None:
         """Initialize the switch entity.
 
@@ -64,11 +68,22 @@ class CozyLifeSwitch(SwitchEntity):
         _LOGGER.debug(f'Initializing CozyLifeSwitch for device {tcp_client.device_id}')
         self._tcp_client: TcpClient = tcp_client
         self._unique_id: str = tcp_client.device_id
-        self._name: str = f"{tcp_client.device_model_name} {tcp_client.device_id[-4:]}"
+        # Entity name - will be combined with device name by HA
+        self._attr_name: Optional[str] = "Switch"
+        # Device name for the registry
+        self._device_name: str = f"{tcp_client.device_model_name} {tcp_client.device_id[-4:]}"
 
         # Initialize state attributes
         self._attr_is_on: bool = False
         self._state: Dict[str, Any] = {}
+
+        # Device info for HA device registry
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, tcp_client.device_id)},
+            name=self._device_name,
+            manufacturer="CozyLife",
+            model=tcp_client.device_model_name or "Switch",
+        )
 
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
@@ -80,11 +95,6 @@ class CozyLifeSwitch(SwitchEntity):
         self._state = await self._tcp_client.query()
         if self._state:
             self._attr_is_on = self._state.get('1', 0) != 0
-
-    @property
-    def name(self) -> str:
-        """Return the name of the switch."""
-        return self._name
 
     @property
     def available(self) -> bool:
@@ -111,11 +121,10 @@ class CozyLifeSwitch(SwitchEntity):
         if success:
             # Update local state optimistically
             self._attr_is_on = True
-
-            # Schedule async update in background (don't wait)
-            self.hass.async_create_task(self.async_update())
+            # State will be synced on next poll - no need for immediate async_update
+            self.async_write_ha_state()
         else:
-            _LOGGER.warning(f"Failed to turn on {self._name}")
+            _LOGGER.warning(f"Failed to turn on {self._device_name}")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
@@ -127,8 +136,7 @@ class CozyLifeSwitch(SwitchEntity):
         if success:
             # Update local state optimistically
             self._attr_is_on = False
-
-            # Schedule async update in background (don't wait)
-            self.hass.async_create_task(self.async_update())
+            # State will be synced on next poll - no need for immediate async_update
+            self.async_write_ha_state()
         else:
-            _LOGGER.warning(f"Failed to turn off {self._name}")
+            _LOGGER.warning(f"Failed to turn off {self._device_name}")

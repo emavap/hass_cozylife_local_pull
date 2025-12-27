@@ -51,7 +51,7 @@ class TestCozyLifeLight:
 
         assert light._tcp_client == mock_tcp_client
         assert light._unique_id == "test_light_123"
-        assert "Test Light" in light._name
+        assert "Test Light" in light._device_name
 
     async def test_light_added_to_hass(self, mock_tcp_client, mock_hass):
         """Test light added to Home Assistant."""
@@ -106,6 +106,7 @@ class TestCozyLifeLight:
         """Test turning light on."""
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
+        light.async_write_ha_state = MagicMock()
 
         await light.async_turn_on()
 
@@ -113,11 +114,13 @@ class TestCozyLifeLight:
         call_args = mock_tcp_client.control.call_args[0][0]
         assert call_args['1'] == 255
         assert light._attr_is_on is True
+        light.async_write_ha_state.assert_called_once()
 
     async def test_light_turn_on_with_brightness(self, mock_tcp_client, mock_hass):
         """Test turning light on with brightness."""
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
+        light.async_write_ha_state = MagicMock()
 
         await light.async_turn_on(**{ATTR_BRIGHTNESS: 200})
 
@@ -129,6 +132,7 @@ class TestCozyLifeLight:
         """Test turning light on with color temperature."""
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
+        light.async_write_ha_state = MagicMock()
 
         await light.async_turn_on(**{ATTR_COLOR_TEMP_KELVIN: 4000})
 
@@ -140,6 +144,7 @@ class TestCozyLifeLight:
         """Test turning light on with HS color."""
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
+        light.async_write_ha_state = MagicMock()
 
         await light.async_turn_on(**{ATTR_HS_COLOR: (120, 75)})
 
@@ -152,12 +157,14 @@ class TestCozyLifeLight:
         """Test turning light off."""
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
+        light.async_write_ha_state = MagicMock()
         light._attr_is_on = True
 
         await light.async_turn_off()
 
         mock_tcp_client.control.assert_called_once_with({'1': 0})
         assert light._attr_is_on is False
+        light.async_write_ha_state.assert_called_once()
 
     async def test_light_turn_on_failure(self, mock_tcp_client, mock_hass):
         """Test handling of turn on failure."""

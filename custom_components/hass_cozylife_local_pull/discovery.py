@@ -22,9 +22,10 @@ async def async_discover_devices(hass: HomeAssistant) -> list[str]:
     base_ip = ".".join(source_ip.split(".")[:3])
     ips_to_scan = [f"{base_ip}.{i}" for i in range(1, 255)]
 
-    found_ips = []
+    found_ips: list[str] = []
+    found_ips_lock = asyncio.Lock()
 
-    async def check_ip(ip_addr):
+    async def check_ip(ip_addr: str) -> None:
         """Check if IP has CozyLife hostname with timeout"""
         # Skip own IP
         if ip_addr == source_ip:
@@ -42,7 +43,8 @@ async def async_discover_devices(hass: HomeAssistant) -> list[str]:
                 hostname = host_info[0]
                 if hostname and hostname.startswith("CozyLife_"):
                     _LOGGER.info(f"Found CozyLife device by hostname at {ip_addr}: {hostname}")
-                    found_ips.append(ip_addr)
+                    async with found_ips_lock:
+                        found_ips.append(ip_addr)
             except asyncio.TimeoutError:
                 # Timeout is expected for most IPs
                 pass

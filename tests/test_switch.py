@@ -38,7 +38,7 @@ class TestCozyLifeSwitch:
 
         assert switch._tcp_client == mock_tcp_client
         assert switch._unique_id == "test_switch_456"
-        assert "Test Switch" in switch._name
+        assert "Test Switch" in switch._device_name
 
     async def test_switch_added_to_hass(self, mock_tcp_client, mock_hass):
         """Test switch added to Home Assistant."""
@@ -83,25 +83,27 @@ class TestCozyLifeSwitch:
         """Test turning switch on."""
         switch = CozyLifeSwitch(mock_tcp_client)
         switch.hass = mock_hass
+        switch.async_write_ha_state = MagicMock()
         switch._attr_is_on = False
 
         await switch.async_turn_on()
 
         mock_tcp_client.control.assert_called_once_with({'1': 255})
         assert switch._attr_is_on is True
-        mock_hass.async_create_task.assert_called_once()
+        switch.async_write_ha_state.assert_called_once()
 
     async def test_switch_turn_off(self, mock_tcp_client, mock_hass):
         """Test turning switch off."""
         switch = CozyLifeSwitch(mock_tcp_client)
         switch.hass = mock_hass
+        switch.async_write_ha_state = MagicMock()
         switch._attr_is_on = True
 
         await switch.async_turn_off()
 
         mock_tcp_client.control.assert_called_once_with({'1': 0})
         assert switch._attr_is_on is False
-        mock_hass.async_create_task.assert_called_once()
+        switch.async_write_ha_state.assert_called_once()
 
     async def test_switch_turn_on_failure(self, mock_tcp_client, mock_hass):
         """Test handling of turn on failure."""
@@ -145,7 +147,8 @@ class TestCozyLifeSwitch:
         switch._attr_is_on = True
 
         assert switch.is_on is True
-        assert switch.name == "Test Switch _456"
+        assert switch._attr_name == "Switch"  # Entity name (not device name)
+        assert switch._device_name == "Test Switch _456"  # Device name for registry
         assert switch.unique_id == "test_switch_456"
 
         switch._attr_is_on = False

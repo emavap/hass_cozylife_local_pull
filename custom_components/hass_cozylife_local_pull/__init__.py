@@ -108,6 +108,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
+        # Close all TCP connections before removing data
+        entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
+        clients = entry_data.get('tcp_client', [])
+        for client in clients:
+            try:
+                await client.disconnect()
+            except Exception as e:
+                _LOGGER.debug(f"Error disconnecting client: {e}")
+
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
     return unload_ok

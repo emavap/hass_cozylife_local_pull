@@ -10,6 +10,7 @@ from homeassistant.components.light import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from typing import Any, Optional, Set, Tuple, Dict
@@ -65,6 +66,8 @@ class CozyLifeLight(LightEntity):
 
     _attr_min_color_temp_kelvin: int = 2000
     _attr_max_color_temp_kelvin: int = 6500
+    _attr_assumed_state: bool = True  # Use optimistic updates
+    _attr_has_entity_name: bool = True
 
     def __init__(self, tcp_client: TcpClient) -> None:
         """Initialize the light entity.
@@ -75,7 +78,10 @@ class CozyLifeLight(LightEntity):
         _LOGGER.debug(f'Initializing CozyLifeLight for device {tcp_client.device_id}')
         self._tcp_client: TcpClient = tcp_client
         self._unique_id: str = tcp_client.device_id
-        self._name: str = f"{tcp_client.device_model_name} {tcp_client.device_id[-4:]}"
+        # Entity name - will be combined with device name by HA
+        self._attr_name: Optional[str] = "Light"
+        # Device name for the registry
+        self._device_name: str = f"{tcp_client.device_model_name} {tcp_client.device_id[-4:]}"
 
         # Initialize state attributes
         self._attr_is_on: bool = False
@@ -86,6 +92,14 @@ class CozyLifeLight(LightEntity):
         self._attr_supported_color_modes: Set[ColorMode] = {ColorMode.BRIGHTNESS}
         self._attr_color_mode: ColorMode = ColorMode.BRIGHTNESS
         self._state: Dict[str, Any] = {}
+
+        # Device info for HA device registry
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, tcp_client.device_id)},
+            name=self._device_name,
+            manufacturer="CozyLife",
+            model=tcp_client.device_model_name or "Light",
+        )
 
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
@@ -148,14 +162,10 @@ class CozyLifeLight(LightEntity):
             # 0-1000 map to 500-153 mireds (2000K-6500K)
             # mireds = 500 - (value / 2)
             mireds = 500 - int(self._state['3'] / 2)
+            # Clamp mireds to valid range (153-500 for 2000K-6500K)
+            mireds = max(153, min(500, mireds))
             self._attr_color_temp = mireds
-            if mireds > 0:
-                self._attr_color_temp_kelvin = int(1000000 / mireds)
-
-    @property
-    def name(self) -> str:
-        """Return the name of the light."""
-        return self._name
+            self._attr_color_temp_kelvin = int(1000000 / mireds)
 
     @property
     def available(self) -> bool:
@@ -212,11 +222,10 @@ class CozyLifeLight(LightEntity):
                 self._attr_hs_color = hs_color
             if colortemp_kelvin is not None:
                 self._attr_color_temp_kelvin = colortemp_kelvin
-
-            # Schedule async update in background (don't wait)
-            self.hass.async_create_task(self.async_update())
+            # State will be synced on next poll - no need for immediate async_update
+            self.async_write_ha_state()
         else:
-            _LOGGER.warning(f"Failed to turn on {self._name}")
+            _LOGGER.warning(f"Failed to turn on {self._device_name}")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
@@ -228,11 +237,10 @@ class CozyLifeLight(LightEntity):
         if success:
             # Update local state optimistically
             self._attr_is_on = False
-
-            # Schedule async update in background (don't wait)
-            self.hass.async_create_task(self.async_update())
+            # State will be synced on next poll - no need for immediate async_update
+            self.async_write_ha_state()
         else:
-            _LOGGER.warning(f"Failed to turn off {self._name}")
+            _LOGGER.warning(f"Failed to turn off {self._device_name}")
 
     @property
     def hs_color(self) -> Optional[Tuple[float, float]]:

@@ -5,7 +5,7 @@
   "issue_tracker": "https://github.com/JoshAtticus/hass_cozylife_local_pull/issues",
   "dependencies": [],
   "codeowners": ["@JoshAtticus"],
-  "requirements": [],
+  "requirements": ["aiohttp>=3.8.0"],
   "iot_class": "local_polling",
   "version": "1.0.0",
   "config_flow": true
