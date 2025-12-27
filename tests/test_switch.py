@@ -147,8 +147,8 @@ class TestCozyLifeSwitch:
         switch._attr_is_on = True
 
         assert switch.is_on is True
-        assert switch._attr_name == "Switch"  # Entity name (not device name)
-        assert switch._device_name == "Test Switch _456"  # Device name for registry
+        assert switch._attr_name is None  # Entity name is None, uses device name
+        assert switch._device_name == "Test Switch"  # Device name for registry
         assert switch.unique_id == "test_switch_456"
 
         switch._attr_is_on = False

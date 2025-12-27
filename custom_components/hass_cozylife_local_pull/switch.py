@@ -68,10 +68,10 @@ class CozyLifeSwitch(SwitchEntity):
         _LOGGER.debug(f'Initializing CozyLifeSwitch for device {tcp_client.device_id}')
         self._tcp_client: TcpClient = tcp_client
         self._unique_id: str = tcp_client.device_id
-        # Entity name - will be combined with device name by HA
-        self._attr_name: Optional[str] = "Switch"
-        # Device name for the registry
-        self._device_name: str = f"{tcp_client.device_model_name} {tcp_client.device_id[-4:]}"
+        # Use model name as the display name
+        self._device_name: str = tcp_client.device_model_name or "CozyLife Switch"
+        # Entity name set to None so HA uses device name directly
+        self._attr_name: Optional[str] = None
 
         # Initialize state attributes
         self._attr_is_on: bool = False
