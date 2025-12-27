@@ -1,0 +1,14 @@
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    volumes:
+      - ./custom_components:/workspace/custom_components
+      - ./tests:/workspace/tests
+      - ./htmlcov:/workspace/htmlcov
+      - ./pytest.ini:/workspace/pytest.ini
+    environment:
+      - PYTHONPATH=/workspace
+      - TZ=America/Los_Angeles
+    command: pytest -v --cov=custom_components/hass_cozylife_local_pull --cov-report=term-missing --cov-report=html tests/

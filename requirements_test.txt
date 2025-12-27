@@ -1,0 +1,9 @@
+# Testing framework - this will pull in all required dependencies
+pytest-homeassistant-custom-component==0.13.106
+
+# Additional testing tools
+pytest-mock==3.12.0
+
+# Timezone data for Python
+tzdata
+
