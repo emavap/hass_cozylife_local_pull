@@ -26,10 +26,13 @@ class CozyLifeEntity(Entity):
         """
         self._tcp_client: TcpClient = tcp_client
         self._unique_id: str = tcp_client.device_id
-        # Use model name and type code as the display name
-        self._device_name: str = (
-            f"{tcp_client.device_model_name} ({tcp_client.device_type_code})"
-        )
+        # Use user-given device name if available, otherwise just model name
+        if tcp_client.device_name:
+            self._device_name: str = tcp_client.device_name
+        elif tcp_client.device_model_name:
+            self._device_name = tcp_client.device_model_name
+        else:
+            self._device_name = f"CozyLife {tcp_client.device_id[:8]}"
         # Entity name set to None so HA uses device name directly
         self._attr_name: str | None = None
 

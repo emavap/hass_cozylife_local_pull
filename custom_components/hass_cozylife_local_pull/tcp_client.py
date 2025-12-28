@@ -215,10 +215,14 @@ class TcpClient:
     def available(self) -> bool:
         """Return if device is available.
 
+        The availability is based on the last successful communication,
+        not the current connection state. This prevents flapping when
+        the TCP connection is temporarily closed between polls.
+
         Returns:
             True if device is available, False otherwise.
         """
-        return self._available and self.is_connected()
+        return self._available
 
     @property
     def check(self) -> bool:

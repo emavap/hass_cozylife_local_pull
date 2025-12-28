@@ -23,6 +23,7 @@ class TestCozyLifeLight:
         """Create a mock TCP client."""
         client = MagicMock(spec=tcp_client)
         client.device_id = "test_light_123"
+        client.device_name = "Living Room Light"  # User-given name from CozyLife app
         client.device_model_name = "Test Light"
         client.device_type_code = "01"
         client.dpid = ['1', '2', '3', '4', '5', '6']
@@ -52,7 +53,8 @@ class TestCozyLifeLight:
 
         assert light._tcp_client == mock_tcp_client
         assert light._unique_id == "test_light_123"
-        assert light._device_name == "Test Light (01)"
+        # Uses user-given device name from CozyLife app
+        assert light._device_name == "Living Room Light"
 
     async def test_light_added_to_hass(self, mock_tcp_client, mock_hass):
         """Test light added to Home Assistant."""
