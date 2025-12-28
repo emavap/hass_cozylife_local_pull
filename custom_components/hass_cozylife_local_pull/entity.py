@@ -16,7 +16,6 @@ _LOGGER = logging.getLogger(__name__)
 class CozyLifeEntity(Entity):
     """Base representation of a CozyLife device entity."""
 
-    _attr_assumed_state: bool = True  # Use optimistic updates
     _attr_has_entity_name: bool = True
 
     def __init__(self, tcp_client: TcpClient) -> None:
@@ -78,7 +77,23 @@ class CozyLifeEntity(Entity):
         return self._unique_id
 
     async def async_update(self) -> None:
-        """Query device and update state."""
+        """Query device and update state.
+
+        If the device is unavailable, attempt to reconnect using the backoff timer.
+        This prevents excessive connection attempts to offline devices.
+        """
+        # If device is unavailable, try to reconnect (respects backoff timer)
+        if not self._tcp_client.available:
+            _LOGGER.debug(
+                "Device %s unavailable, attempting reconnection", self._device_name
+            )
+            # Use normal connect which respects backoff timer
+            # This prevents hammering unavailable devices on every poll
+            connected = await self._tcp_client.connect()
+            if not connected:
+                # Backoff timer will space out retry attempts
+                return
+
         self._state = await self._tcp_client.query()
         if self._state:
             # Check if device is on (state key '1' is non-zero)

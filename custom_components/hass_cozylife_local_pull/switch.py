@@ -38,6 +38,7 @@ class CozyLifeSwitch(CozyLifeEntity, SwitchEntity):
     """Representation of a CozyLife switch."""
 
     _attr_device_class = SwitchDeviceClass.SWITCH
+    _attr_assumed_state = False  # We query actual device state, not assumed
 
     def __init__(self, tcp_client: TcpClient) -> None:
         """Initialize the switch entity.
@@ -64,7 +65,8 @@ class CozyLifeSwitch(CozyLifeEntity, SwitchEntity):
         success = await self._async_send_command({DPID_SWITCH: 255})
 
         if success:
-            self._attr_is_on = True
+            # Query actual state from device instead of assuming
+            await self.async_update()
             self.async_write_ha_state()
         else:
             _LOGGER.warning("Failed to turn on %s", self._device_name)
@@ -76,7 +78,8 @@ class CozyLifeSwitch(CozyLifeEntity, SwitchEntity):
         success = await self._async_send_command({DPID_SWITCH: 0})
 
         if success:
-            self._attr_is_on = False
+            # Query actual state from device instead of assuming
+            await self.async_update()
             self.async_write_ha_state()
         else:
             _LOGGER.warning("Failed to turn off %s", self._device_name)

@@ -45,16 +45,19 @@ LANG = "en"
 API_DOMAIN = "api-us.doiting.com"
 
 # Connection timeouts (in seconds)
-# Optimized for local network - devices typically respond in <100ms
-CONNECTION_TIMEOUT = 3
-COMMAND_TIMEOUT = 1
-RESPONSE_TIMEOUT = 0.5
+# Increased for better reliability with slow-responding devices
+CONNECTION_TIMEOUT = 5
+COMMAND_TIMEOUT = 3
+RESPONSE_TIMEOUT = 2
 
 # Retry configuration
-MAX_RETRY_ATTEMPTS = 2  # Reduced for faster failure detection
-INITIAL_RETRY_DELAY = 0.5  # seconds
-MAX_RETRY_DELAY = 10.0  # seconds
+MAX_RETRY_ATTEMPTS = 3
+INITIAL_RETRY_DELAY = 1.0  # seconds
+MAX_RETRY_DELAY = 30.0  # seconds
 RETRY_BACKOFF_FACTOR = 2.0
+
+# Periodic reconnection interval (in seconds)
+RECONNECT_INTERVAL = 60  # How often to try reconnecting unavailable devices
 
 # Cache keys for hass.data
 CACHE_PID_LIST = "pid_list"

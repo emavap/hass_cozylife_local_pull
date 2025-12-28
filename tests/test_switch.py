@@ -84,6 +84,8 @@ class TestCozyLifeSwitch:
 
     async def test_switch_turn_on(self, mock_tcp_client, mock_hass):
         """Test turning switch on."""
+        # Mock query to return "on" state after command
+        mock_tcp_client.query = AsyncMock(return_value={'1': 255})
         switch = CozyLifeSwitch(mock_tcp_client)
         switch.hass = mock_hass
         switch.async_write_ha_state = MagicMock()
@@ -92,11 +94,14 @@ class TestCozyLifeSwitch:
         await switch.async_turn_on()
 
         mock_tcp_client.control.assert_called_once_with({'1': 255})
+        # State is updated via async_update which queries the device
         assert switch._attr_is_on is True
         switch.async_write_ha_state.assert_called_once()
 
     async def test_switch_turn_off(self, mock_tcp_client, mock_hass):
         """Test turning switch off."""
+        # Mock query to return "off" state after command
+        mock_tcp_client.query = AsyncMock(return_value={'1': 0})
         switch = CozyLifeSwitch(mock_tcp_client)
         switch.hass = mock_hass
         switch.async_write_ha_state = MagicMock()
@@ -105,6 +110,7 @@ class TestCozyLifeSwitch:
         await switch.async_turn_off()
 
         mock_tcp_client.control.assert_called_once_with({'1': 0})
+        # State is updated via async_update which queries the device
         assert switch._attr_is_on is False
         switch.async_write_ha_state.assert_called_once()
 

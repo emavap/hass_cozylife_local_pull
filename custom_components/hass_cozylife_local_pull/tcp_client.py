@@ -72,13 +72,19 @@ class TcpClient:
         self._retry_count: int = 0
         self._next_retry_time: float = 0.0
     
-    async def connect(self) -> bool:
+    async def connect(self, force: bool = False) -> bool:
         """Establish connection to device with improved error handling.
+
+        Args:
+            force: If True, ignore backoff timer and attempt connection immediately.
 
         Returns:
             True if connection was successful, False otherwise.
         """
         async with self._lock:
+            if force:
+                # Reset backoff timer to allow immediate connection attempt
+                self._next_retry_time = 0.0
             return await self._connect_internal()
 
     async def _connect_internal(self) -> bool:
