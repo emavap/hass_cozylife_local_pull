@@ -44,11 +44,21 @@ MAX_COLOR_TEMP_KELVIN = 6500
 LANG = "en"
 API_DOMAIN = "api-us.doiting.com"
 
-# Connection timeouts (in seconds)
-# Increased for better reliability with slow-responding devices
-CONNECTION_TIMEOUT = 5
-COMMAND_TIMEOUT = 3
-RESPONSE_TIMEOUT = 2
+# Connection timeout defaults (in seconds)
+# These can be overridden via config/options flow
+DEFAULT_CONNECTION_TIMEOUT = 5
+DEFAULT_COMMAND_TIMEOUT = 3
+DEFAULT_RESPONSE_TIMEOUT = 2
+
+# Config keys for timeouts
+CONF_CONNECTION_TIMEOUT = "connection_timeout"
+CONF_COMMAND_TIMEOUT = "command_timeout"
+CONF_RESPONSE_TIMEOUT = "response_timeout"
+
+# Legacy constants for backward compatibility
+CONNECTION_TIMEOUT = DEFAULT_CONNECTION_TIMEOUT
+COMMAND_TIMEOUT = DEFAULT_COMMAND_TIMEOUT
+RESPONSE_TIMEOUT = DEFAULT_RESPONSE_TIMEOUT
 
 # Retry configuration
 MAX_RETRY_ATTEMPTS = 3

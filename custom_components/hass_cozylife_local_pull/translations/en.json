@@ -3,12 +3,18 @@
     "step": {
       "user": {
         "title": "CozyLife Local Setup",
-        "description": "Configure the CozyLife Local integration. Devices are automatically discovered via UDP broadcast and hostname scanning. You can optionally specify additional IP addresses manually.",
+        "description": "Configure the CozyLife Local integration. Devices are automatically discovered via UDP broadcast and hostname scanning.",
         "data": {
-          "ips": "Manual IP addresses (comma separated, optional)"
+          "ips": "Manual IP addresses (comma separated, optional)",
+          "connection_timeout": "Connection timeout (seconds)",
+          "command_timeout": "Command timeout (seconds)",
+          "response_timeout": "Response timeout (seconds)"
         },
         "data_description": {
-          "ips": "Enter IP addresses of devices that may not be discovered automatically, separated by commas. Leave empty to use automatic discovery only."
+          "ips": "Enter IP addresses of devices that may not be discovered automatically, separated by commas. Leave empty to use automatic discovery only.",
+          "connection_timeout": "Timeout for establishing device connections (1-30 seconds)",
+          "command_timeout": "Timeout for sending commands to devices (1-30 seconds)",
+          "response_timeout": "Timeout for waiting for device responses (1-30 seconds)"
         }
       }
     },
@@ -23,12 +29,13 @@
   "options": {
     "step": {
       "init": {
-        "title": "Manage Device IPs",
+        "title": "Manage CozyLife Settings",
         "description": "Currently configured: {current_count} IP address(es). Choose an action:",
         "menu_options": {
           "add_ip": "Add IP address",
           "remove_ip": "Remove IP address",
           "view_ips": "View configured IPs",
+          "timeouts": "Configure timeouts",
           "done": "Done"
         }
       },
@@ -52,6 +59,20 @@
       "view_ips": {
         "title": "Configured IP Addresses",
         "description": "Currently configured IP addresses:\n\n{ip_list}"
+      },
+      "timeouts": {
+        "title": "Configure Timeouts",
+        "description": "Adjust timeout values for device communication. Increase these if you have slow-responding devices.",
+        "data": {
+          "connection_timeout": "Connection timeout (seconds)",
+          "command_timeout": "Command timeout (seconds)",
+          "response_timeout": "Response timeout (seconds)"
+        },
+        "data_description": {
+          "connection_timeout": "Timeout for establishing device connections (1-30 seconds)",
+          "command_timeout": "Timeout for sending commands to devices (1-30 seconds)",
+          "response_timeout": "Timeout for waiting for device responses (1-30 seconds)"
+        }
       }
     },
     "error": {

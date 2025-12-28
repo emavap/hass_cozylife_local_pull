@@ -9,7 +9,15 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    CONF_CONNECTION_TIMEOUT,
+    CONF_COMMAND_TIMEOUT,
+    CONF_RESPONSE_TIMEOUT,
+    DEFAULT_CONNECTION_TIMEOUT,
+    DEFAULT_COMMAND_TIMEOUT,
+    DEFAULT_RESPONSE_TIMEOUT,
+)
 
 
 class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -39,10 +47,19 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema({
                 vol.Optional("ips", default=""): str,
+                vol.Optional(
+                    CONF_CONNECTION_TIMEOUT,
+                    default=DEFAULT_CONNECTION_TIMEOUT,
+                ): vol.All(vol.Coerce(float), vol.Range(min=1, max=30)),
+                vol.Optional(
+                    CONF_COMMAND_TIMEOUT,
+                    default=DEFAULT_COMMAND_TIMEOUT,
+                ): vol.All(vol.Coerce(float), vol.Range(min=1, max=30)),
+                vol.Optional(
+                    CONF_RESPONSE_TIMEOUT,
+                    default=DEFAULT_RESPONSE_TIMEOUT,
+                ): vol.All(vol.Coerce(float), vol.Range(min=1, max=30)),
             }),
-            description_placeholders={
-                "ips": "IP addresses (comma separated)",
-            },
         )
 
 
@@ -63,7 +80,7 @@ class CozyLifeOptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_menu(
             step_id="init",
-            menu_options=["add_ip", "remove_ip", "view_ips", "done"],
+            menu_options=["add_ip", "remove_ip", "view_ips", "timeouts", "done"],
             description_placeholders={
                 "current_count": str(len(self._ips)),
             },
@@ -146,6 +163,54 @@ class CozyLifeOptionsFlowHandler(config_entries.OptionsFlow):
             description_placeholders={
                 "ip_list": ip_list,
             },
+        )
+
+    async def async_step_timeouts(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure timeout settings."""
+        if user_input is not None:
+            # Save timeout settings
+            new_data = {
+                **self.config_entry.data,
+                CONF_CONNECTION_TIMEOUT: user_input[CONF_CONNECTION_TIMEOUT],
+                CONF_COMMAND_TIMEOUT: user_input[CONF_COMMAND_TIMEOUT],
+                CONF_RESPONSE_TIMEOUT: user_input[CONF_RESPONSE_TIMEOUT],
+            }
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data
+            )
+            # Reload to apply new settings
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return await self.async_step_init()
+
+        # Get current values or defaults
+        current_connection = self.config_entry.data.get(
+            CONF_CONNECTION_TIMEOUT, DEFAULT_CONNECTION_TIMEOUT
+        )
+        current_command = self.config_entry.data.get(
+            CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT
+        )
+        current_response = self.config_entry.data.get(
+            CONF_RESPONSE_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT
+        )
+
+        return self.async_show_form(
+            step_id="timeouts",
+            data_schema=vol.Schema({
+                vol.Optional(
+                    CONF_CONNECTION_TIMEOUT,
+                    default=current_connection,
+                ): vol.All(vol.Coerce(float), vol.Range(min=1, max=30)),
+                vol.Optional(
+                    CONF_COMMAND_TIMEOUT,
+                    default=current_command,
+                ): vol.All(vol.Coerce(float), vol.Range(min=1, max=30)),
+                vol.Optional(
+                    CONF_RESPONSE_TIMEOUT,
+                    default=current_response,
+                ): vol.All(vol.Coerce(float), vol.Range(min=1, max=30)),
+            }),
         )
 
     async def async_step_done(

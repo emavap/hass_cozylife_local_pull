@@ -12,7 +12,17 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, LANG, SUPPORT_DEVICE_CATEGORY
+from .const import (
+    DOMAIN,
+    LANG,
+    SUPPORT_DEVICE_CATEGORY,
+    CONF_CONNECTION_TIMEOUT,
+    CONF_COMMAND_TIMEOUT,
+    CONF_RESPONSE_TIMEOUT,
+    DEFAULT_CONNECTION_TIMEOUT,
+    DEFAULT_COMMAND_TIMEOUT,
+    DEFAULT_RESPONSE_TIMEOUT,
+)
 from .discovery import async_discover_devices
 from .tcp_client import TcpClient
 from .udp_discover import get_ip
@@ -82,8 +92,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Pre-fetch PID list for device identification
     await async_get_pid_list(hass, LANG)
 
-    # Create TCP clients for each discovered IP
-    clients: list[TcpClient] = [TcpClient(ip) for ip in ip_list]
+    # Get timeout configuration from entry data
+    connection_timeout = entry.data.get(CONF_CONNECTION_TIMEOUT, DEFAULT_CONNECTION_TIMEOUT)
+    command_timeout = entry.data.get(CONF_COMMAND_TIMEOUT, DEFAULT_COMMAND_TIMEOUT)
+    response_timeout = entry.data.get(CONF_RESPONSE_TIMEOUT, DEFAULT_RESPONSE_TIMEOUT)
+
+    _LOGGER.debug(
+        "Using timeouts: connection=%s, command=%s, response=%s",
+        connection_timeout,
+        command_timeout,
+        response_timeout,
+    )
+
+    # Create TCP clients for each discovered IP with configured timeouts
+    clients: list[TcpClient] = [
+        TcpClient(
+            ip,
+            hass=hass,
+            connection_timeout=connection_timeout,
+            command_timeout=command_timeout,
+            response_timeout=response_timeout,
+        )
+        for ip in ip_list
+    ]
 
     # Connect to devices to get info
     if clients:

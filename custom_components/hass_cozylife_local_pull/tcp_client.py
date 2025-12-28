@@ -11,9 +11,9 @@ from typing import Any, TYPE_CHECKING
 
 from .const import (
     TCP_PORT,
-    CONNECTION_TIMEOUT,
-    COMMAND_TIMEOUT,
-    RESPONSE_TIMEOUT,
+    DEFAULT_CONNECTION_TIMEOUT,
+    DEFAULT_COMMAND_TIMEOUT,
+    DEFAULT_RESPONSE_TIMEOUT,
     MAX_RETRY_ATTEMPTS,
     INITIAL_RETRY_DELAY,
     MAX_RETRY_DELAY,
@@ -48,12 +48,22 @@ class DeviceInfo:
 class TcpClient:
     """Represents a CozyLife device connection with automatic reconnection."""
 
-    def __init__(self, ip: str, hass: HomeAssistant | None = None) -> None:
+    def __init__(
+        self,
+        ip: str,
+        hass: HomeAssistant | None = None,
+        connection_timeout: float | None = None,
+        command_timeout: float | None = None,
+        response_timeout: float | None = None,
+    ) -> None:
         """Initialize the TCP client.
 
         Args:
             ip: The IP address of the device.
             hass: Optional Home Assistant instance for caching.
+            connection_timeout: Timeout for establishing connection (seconds).
+            command_timeout: Timeout for sending commands (seconds).
+            response_timeout: Timeout for waiting for responses (seconds).
         """
         self._ip: str = ip
         self._hass: HomeAssistant | None = hass
@@ -62,6 +72,11 @@ class TcpClient:
         self._lock: asyncio.Lock = asyncio.Lock()
         self._available: bool = False
         self._read_buffer: str = ""  # Buffer for partial responses
+
+        # Configurable timeouts with defaults
+        self._connection_timeout: float = connection_timeout or DEFAULT_CONNECTION_TIMEOUT
+        self._command_timeout: float = command_timeout or DEFAULT_COMMAND_TIMEOUT
+        self._response_timeout: float = response_timeout or DEFAULT_RESPONSE_TIMEOUT
 
         # Device info
         self._info: DeviceInfo = DeviceInfo()
@@ -112,11 +127,11 @@ class TcpClient:
 
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self._ip, TCP_PORT),
-                timeout=CONNECTION_TIMEOUT,
+                timeout=self._connection_timeout,
             )
 
             # Get device info with timeout
-            await asyncio.wait_for(self._device_info(), timeout=CONNECTION_TIMEOUT)
+            await asyncio.wait_for(self._device_info(), timeout=self._connection_timeout)
 
             # If dpid is still empty, try to query to get attributes
             if not self._info.dpid:
@@ -289,7 +304,7 @@ class TcpClient:
 
         try:
             resp = await asyncio.wait_for(
-                self._reader.read(1024), timeout=COMMAND_TIMEOUT
+                self._reader.read(1024), timeout=self._command_timeout
             )
             resp_json = json.loads(resp.strip())
         except TimeoutError:
@@ -429,13 +444,13 @@ class TcpClient:
         try:
             _LOGGER.debug("Sending command %d to %s with payload %s", cmd, self._ip, payload)
             self._writer.write(self._get_package(cmd, payload))
-            await asyncio.wait_for(self._writer.drain(), timeout=COMMAND_TIMEOUT)
+            await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
 
             # Wait for response with retry logic for timeouts
             for attempt in range(MAX_RETRY_ATTEMPTS):
                 try:
                     res = await asyncio.wait_for(
-                        self._reader.read(1024), timeout=RESPONSE_TIMEOUT
+                        self._reader.read(1024), timeout=self._response_timeout
                     )
                     if not res:
                         _LOGGER.debug("Empty response from %s", self._ip)
@@ -523,7 +538,7 @@ class TcpClient:
         try:
             _LOGGER.debug("Sending only command %d to %s", cmd, self._ip)
             self._writer.write(self._get_package(cmd, payload))
-            await asyncio.wait_for(self._writer.drain(), timeout=COMMAND_TIMEOUT)
+            await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
         except TimeoutError:
             _LOGGER.error("Send timeout to %s", self._ip)
             self._available = False
@@ -551,12 +566,12 @@ class TcpClient:
             try:
                 _LOGGER.debug("Sending control command to %s with payload %s", self._ip, payload)
                 self._writer.write(self._get_package(CMD_SET, payload))
-                await asyncio.wait_for(self._writer.drain(), timeout=COMMAND_TIMEOUT)
+                await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
 
                 # Wait for acknowledgment with shorter timeout
                 try:
                     res = await asyncio.wait_for(
-                        self._reader.read(1024), timeout=RESPONSE_TIMEOUT
+                        self._reader.read(1024), timeout=self._response_timeout
                     )
                     if res:
                         res_str = res.decode("utf-8", errors="ignore")

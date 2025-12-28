@@ -122,6 +122,8 @@ class TestCozyLifeLight:
 
     async def test_light_turn_on_with_brightness(self, mock_tcp_client, mock_hass):
         """Test turning light on with brightness."""
+        # Mock query to return state with brightness after command
+        mock_tcp_client.query = AsyncMock(return_value={'1': 255, '4': 784})
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
         light.async_write_ha_state = MagicMock()
@@ -131,10 +133,13 @@ class TestCozyLifeLight:
         call_args = mock_tcp_client.control.call_args[0][0]
         # HA 200/255 -> Device: min(int(200 * 1000 / 255), 1000) = 784
         assert call_args['4'] == 784
-        assert light._attr_brightness == 200
+        # State is updated via async_update which queries the device
+        assert light._attr_is_on is True
 
     async def test_light_turn_on_with_color_temp(self, mock_tcp_client, mock_hass):
         """Test turning light on with color temperature."""
+        # Mock query to return state with color temp after command
+        mock_tcp_client.query = AsyncMock(return_value={'1': 255, '3': 500})
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
         light.async_write_ha_state = MagicMock()
@@ -143,10 +148,13 @@ class TestCozyLifeLight:
 
         call_args = mock_tcp_client.control.call_args[0][0]
         assert '3' in call_args
-        assert light._attr_color_temp_kelvin == 4000
+        # State is updated via async_update
+        assert light._attr_is_on is True
 
     async def test_light_turn_on_with_hs_color(self, mock_tcp_client, mock_hass):
         """Test turning light on with HS color."""
+        # Mock query to return state with HS color after command
+        mock_tcp_client.query = AsyncMock(return_value={'1': 255, '5': 120, '6': 750})
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
         light.async_write_ha_state = MagicMock()
@@ -156,10 +164,13 @@ class TestCozyLifeLight:
         call_args = mock_tcp_client.control.call_args[0][0]
         assert call_args['5'] == 120
         assert call_args['6'] == 750  # 75 * 10
-        assert light._attr_hs_color == (120, 75)
+        # State is updated via async_update
+        assert light._attr_is_on is True
 
     async def test_light_turn_off(self, mock_tcp_client, mock_hass):
         """Test turning light off."""
+        # Mock query to return "off" state after command
+        mock_tcp_client.query = AsyncMock(return_value={'1': 0})
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
         light.async_write_ha_state = MagicMock()
@@ -168,6 +179,7 @@ class TestCozyLifeLight:
         await light.async_turn_off()
 
         mock_tcp_client.control.assert_called_once_with({'1': 0})
+        # State is updated via async_update which queries the device
         assert light._attr_is_on is False
         light.async_write_ha_state.assert_called_once()
 

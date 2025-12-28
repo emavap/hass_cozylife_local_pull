@@ -53,6 +53,7 @@ class CozyLifeLight(CozyLifeEntity, LightEntity):
 
     _attr_min_color_temp_kelvin: int = MIN_COLOR_TEMP_KELVIN
     _attr_max_color_temp_kelvin: int = MAX_COLOR_TEMP_KELVIN
+    _attr_assumed_state = False  # We query actual device state, not assumed
 
     def __init__(self, tcp_client: TcpClient) -> None:
         """Initialize the light entity.
@@ -190,14 +191,8 @@ class CozyLifeLight(CozyLifeEntity, LightEntity):
         success = await self._async_send_command(payload)
 
         if success:
-            # Update local state optimistically
-            self._attr_is_on = True
-            if brightness is not None:
-                self._attr_brightness = brightness
-            if hs_color is not None:
-                self._attr_hs_color = hs_color
-            if colortemp_kelvin is not None:
-                self._attr_color_temp_kelvin = colortemp_kelvin
+            # Query actual state from device instead of assuming
+            await self.async_update()
             self.async_write_ha_state()
         else:
             _LOGGER.warning("Failed to turn on %s", self._device_name)
@@ -209,7 +204,8 @@ class CozyLifeLight(CozyLifeEntity, LightEntity):
         success = await self._async_send_command({DPID_SWITCH: 0})
 
         if success:
-            self._attr_is_on = False
+            # Query actual state from device instead of assuming
+            await self.async_update()
             self.async_write_ha_state()
         else:
             _LOGGER.warning("Failed to turn off %s", self._device_name)
