@@ -5,24 +5,21 @@ Devices are discovered via UDP broadcast and hostname scanning, then controlled 
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
-import logging
-import asyncio
-from typing import List
-from .const import (
-    DOMAIN,
-    LANG
-)
-from .utils import async_get_pid_list
-from .udp_discover import get_ip
+
+from .const import DOMAIN, LANG, SUPPORT_DEVICE_CATEGORY
 from .discovery import async_discover_devices
 from .tcp_client import TcpClient
-
+from .udp_discover import get_ip
+from .utils import async_get_pid_list
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS: List[str] = ["light", "switch"]
+PLATFORMS: list[str] = ["light", "switch"]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -49,47 +46,71 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Returns:
         True if setup was successful.
     """
-    _LOGGER.debug('async_setup_entry start')
+    _LOGGER.debug("async_setup_entry start")
 
     # Ensure domain data is initialized
     hass.data.setdefault(DOMAIN, {})
 
-    # UDP Discovery (run in executor to avoid blocking)
-    ip_udp: List[str] = await hass.async_add_executor_job(get_ip)
+    # Run UDP and hostname discovery in parallel for faster startup
+    udp_task = hass.async_add_executor_job(get_ip)
+    hostname_task = async_discover_devices(hass)
+    discovery_results = await asyncio.gather(udp_task, hostname_task, return_exceptions=True)
 
-    # Hostname Discovery
-    ip_hostname: List[str] = await async_discover_devices(hass)
+    # Extract results, handling any exceptions
+    ip_udp: list[str] = discovery_results[0] if isinstance(discovery_results[0], list) else []
+    ip_hostname: list[str] = discovery_results[1] if isinstance(discovery_results[1], list) else []
+
+    if isinstance(discovery_results[0], Exception):
+        _LOGGER.warning("UDP discovery failed: %s", discovery_results[0])
+    if isinstance(discovery_results[1], Exception):
+        _LOGGER.warning("Hostname discovery failed: %s", discovery_results[1])
 
     # Config IPs (manually specified)
-    ip_config_str: str = entry.data.get('ips', '')
-    ip_config: List[str] = [ip.strip() for ip in ip_config_str.split(',') if ip.strip()]
+    ip_config_str: str = entry.data.get("ips", "")
+    ip_config: list[str] = [ip.strip() for ip in ip_config_str.split(",") if ip.strip()]
 
     # Merge and deduplicate IPs
-    ip_list: List[str] = list(set(ip_udp + ip_hostname + ip_config))
+    ip_list: list[str] = list(set(ip_udp + ip_hostname + ip_config))
 
     if not ip_list:
-        _LOGGER.info('Discovery found no devices, but integration will load. Check logs for details.')
+        _LOGGER.info(
+            "Discovery found no devices, but integration will load. Check logs for details."
+        )
 
-    _LOGGER.debug(f'Attempting to connect to ip_list: {ip_list}')
+    _LOGGER.debug("Attempting to connect to ip_list: %s", ip_list)
 
     # Pre-fetch PID list for device identification
-    await async_get_pid_list(LANG)
+    await async_get_pid_list(hass, LANG)
 
     # Create TCP clients for each discovered IP
-    clients: List[TcpClient] = [TcpClient(ip) for ip in ip_list]
+    clients: list[TcpClient] = [TcpClient(ip) for ip in ip_list]
 
     # Connect to devices to get info
     if clients:
         connect_tasks = [client.connect() for client in clients]
         await asyncio.gather(*connect_tasks, return_exceptions=True)
 
-    # Filter clients that have valid device info
-    valid_clients: List[TcpClient] = [c for c in clients if c.device_type_code]
+    # Filter clients that have valid device info and supported device types
+    valid_clients: list[TcpClient] = [
+        c for c in clients
+        if c.device_type_code and c.device_type_code in SUPPORT_DEVICE_CATEGORY
+    ]
 
-    _LOGGER.debug(f"Found {len(valid_clients)} valid devices out of {len(clients)} candidates")
+    # Log any unsupported devices for debugging
+    unsupported = [c for c in clients if c.device_type_code and c.device_type_code not in SUPPORT_DEVICE_CATEGORY]
+    for c in unsupported:
+        _LOGGER.warning(
+            "Skipping unsupported device type '%s' at IP %s",
+            c.device_type_code,
+            c._ip
+        )
+
+    _LOGGER.debug(
+        "Found %d valid devices out of %d candidates", len(valid_clients), len(clients)
+    )
 
     hass.data[DOMAIN][entry.entry_id] = {
-        'tcp_client': valid_clients,
+        "tcp_client": valid_clients,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -110,12 +131,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         # Close all TCP connections before removing data
         entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
-        clients = entry_data.get('tcp_client', [])
+        clients = entry_data.get("tcp_client", [])
         for client in clients:
             try:
                 await client.disconnect()
             except Exception as e:
-                _LOGGER.debug(f"Error disconnecting client: {e}")
+                _LOGGER.debug("Error disconnecting client: %s", e)
 
         hass.data[DOMAIN].pop(entry.entry_id, None)
 

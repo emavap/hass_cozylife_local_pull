@@ -25,7 +25,7 @@ class TestTCPClient:
         assert result is True
         assert client.available is True
         assert client.device_id == "test_device_123"
-        assert client._pid == "test_pid_001"
+        assert client._info.pid == "test_pid_001"
 
     async def test_connect_timeout(self):
         """Test connection timeout."""

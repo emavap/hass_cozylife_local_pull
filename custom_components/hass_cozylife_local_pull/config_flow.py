@@ -166,11 +166,21 @@ class CozyLifeOptionsFlowHandler(config_entries.OptionsFlow):
 
     @staticmethod
     def _is_valid_ip(ip: str) -> bool:
-        """Validate IP address format."""
+        """Validate IP address format.
+
+        Args:
+            ip: The IP address string to validate.
+
+        Returns:
+            True if the IP is valid, False otherwise.
+        """
         parts = ip.split(".")
         if len(parts) != 4:
             return False
         for part in parts:
+            # Reject empty parts and leading zeros (except "0" itself)
+            if not part or (len(part) > 1 and part.startswith("0")):
+                return False
             try:
                 num = int(part)
                 if num < 0 or num > 255:

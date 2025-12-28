@@ -56,6 +56,8 @@ class TestCozyLifeLight:
 
     async def test_light_added_to_hass(self, mock_tcp_client, mock_hass):
         """Test light added to Home Assistant."""
+        # Mock is_connected to return False so connect is called
+        mock_tcp_client.is_connected = MagicMock(return_value=False)
         light = CozyLifeLight(mock_tcp_client)
         light.hass = mock_hass
 
@@ -100,7 +102,8 @@ class TestCozyLifeLight:
         await light.async_update()
 
         assert light._attr_is_on is True
-        assert light._attr_brightness == 128  # 512 / 4
+        # Device 512/1000 -> HA: round(512 * 255 / 1000) = 131
+        assert light._attr_brightness == 131
         assert light._attr_hs_color == (180, 50)  # (180, 500/10)
 
     async def test_light_turn_on_basic(self, mock_tcp_client, mock_hass):
@@ -126,7 +129,8 @@ class TestCozyLifeLight:
         await light.async_turn_on(**{ATTR_BRIGHTNESS: 200})
 
         call_args = mock_tcp_client.control.call_args[0][0]
-        assert call_args['4'] == 800  # 200 * 4
+        # HA 200/255 -> Device: min(int(200 * 1000 / 255), 1000) = 784
+        assert call_args['4'] == 784
         assert light._attr_brightness == 200
 
     async def test_light_turn_on_with_color_temp(self, mock_tcp_client, mock_hass):

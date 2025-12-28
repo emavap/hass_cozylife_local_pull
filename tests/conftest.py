@@ -125,6 +125,10 @@ def mock_async_get_pid_list(mock_pid_list):
     with patch(
         "custom_components.hass_cozylife_local_pull.tcp_client.async_get_pid_list",
         return_value=mock_pid_list,
+    ), patch(
+        "custom_components.hass_cozylife_local_pull.async_get_pid_list",
+        new_callable=AsyncMock,
+        return_value=mock_pid_list,
     ) as mock:
         yield mock
 

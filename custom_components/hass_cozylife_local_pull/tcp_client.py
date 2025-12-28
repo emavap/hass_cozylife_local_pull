@@ -1,44 +1,76 @@
 # -*- coding: utf-8 -*-
-import json
+"""TCP client for CozyLife device communication."""
+from __future__ import annotations
+
 import asyncio
+import json
 import logging
-from typing import Optional, Union, Any, Dict, List
+import time
+from dataclasses import dataclass, field
+from typing import Any, TYPE_CHECKING
+
+from .const import (
+    TCP_PORT,
+    CONNECTION_TIMEOUT,
+    COMMAND_TIMEOUT,
+    RESPONSE_TIMEOUT,
+    MAX_RETRY_ATTEMPTS,
+    INITIAL_RETRY_DELAY,
+    MAX_RETRY_DELAY,
+    RETRY_BACKOFF_FACTOR,
+)
 from .utils import async_get_pid_list, get_sn
 
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+# Command types
 CMD_INFO: int = 0
 CMD_QUERY: int = 2
 CMD_SET: int = 3
-CMD_LIST: List[int] = [CMD_INFO, CMD_QUERY, CMD_SET]
+
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass
+class DeviceInfo:
+    """Data class representing CozyLife device information."""
+
+    device_id: str = ""
+    device_name: str = ""  # User-given name from device
+    pid: str = ""
+    device_type_code: str = ""
+    icon: str = ""
+    device_model_name: str = ""
+    dpid: list[str] = field(default_factory=list)
+
+
 class TcpClient:
-    """Represents a CozyLife device connection."""
+    """Represents a CozyLife device connection with automatic reconnection."""
 
-    _port: int = 5555
-
-    def __init__(self, ip: str) -> None:
+    def __init__(self, ip: str, hass: HomeAssistant | None = None) -> None:
         """Initialize the TCP client.
 
         Args:
             ip: The IP address of the device.
+            hass: Optional Home Assistant instance for caching.
         """
         self._ip: str = ip
-        self._reader: Optional[asyncio.StreamReader] = None
-        self._writer: Optional[asyncio.StreamWriter] = None
+        self._hass: HomeAssistant | None = hass
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
         self._lock: asyncio.Lock = asyncio.Lock()
         self._available: bool = False
+        self._read_buffer: str = ""  # Buffer for partial responses
 
-        # Device info - initialized per instance to avoid shared state
-        self._device_id: str = ""
-        self._device_name: str = ""  # User-given name from device
-        self._pid: str = ""
-        self._device_type_code: str = ""
-        self._icon: str = ""
-        self._device_model_name: str = ""
-        self._dpid: List[str] = []
+        # Device info
+        self._info: DeviceInfo = DeviceInfo()
         self._sn: str = ""
-        self._last_error: Optional[str] = None
+        self._last_error: str | None = None
+
+        # Retry state for exponential backoff
+        self._retry_count: int = 0
+        self._next_retry_time: float = 0.0
     
     async def connect(self) -> bool:
         """Establish connection to device with improved error handling.
@@ -53,43 +85,77 @@ class TcpClient:
         """Internal connect method without lock (to avoid deadlock).
 
         This method should only be called when the lock is already held.
+        Implements exponential backoff for retry attempts.
 
         Returns:
             True if connection was successful, False otherwise.
         """
+        # Check if we should wait before retrying (exponential backoff)
+        current_time = time.monotonic()
+        if current_time < self._next_retry_time:
+            wait_time = self._next_retry_time - current_time
+            _LOGGER.debug(
+                "Waiting %.1f seconds before retry for %s", wait_time, self._ip
+            )
+            return False
+
         try:
             # Close existing connection if any
             if self._writer:
                 await self._close_connection()
 
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._ip, self._port), timeout=5
+                asyncio.open_connection(self._ip, TCP_PORT),
+                timeout=CONNECTION_TIMEOUT,
             )
 
             # Get device info with timeout
-            await asyncio.wait_for(self._device_info(), timeout=5)
+            await asyncio.wait_for(self._device_info(), timeout=CONNECTION_TIMEOUT)
 
             # If dpid is still empty, try to query to get attributes
-            if not self._dpid:
-                _LOGGER.info(f"DPID empty for {self._ip}, querying device for attributes")
+            if not self._info.dpid:
+                _LOGGER.info("DPID empty for %s, querying device for attributes", self._ip)
                 await self._query_internal()
 
             self._available = True
             self._last_error = None
-            _LOGGER.info(f'Successfully connected to {self._ip}')
+            self._retry_count = 0  # Reset on successful connection
+            self._next_retry_time = 0.0
+            _LOGGER.info("Successfully connected to %s", self._ip)
             return True
-        except asyncio.TimeoutError:
-            self._available = False
-            self._last_error = "Connection timeout"
-            _LOGGER.warning(f'Connection timeout to {self._ip}')
-            await self._close_connection()
+
+        except TimeoutError:
+            self._handle_connection_failure("Connection timeout")
             return False
         except Exception as e:
-            self._available = False
-            self._last_error = str(e)
-            _LOGGER.warning(f'Connection failed to {self._ip}: {e}')
-            await self._close_connection()
+            self._handle_connection_failure(str(e))
             return False
+
+    def _handle_connection_failure(self, error: str) -> None:
+        """Handle connection failure with exponential backoff.
+
+        Args:
+            error: Error message describing the failure.
+        """
+        self._available = False
+        self._last_error = error
+        self._retry_count = min(self._retry_count + 1, MAX_RETRY_ATTEMPTS)
+
+        # Calculate next retry time with exponential backoff
+        delay = min(
+            INITIAL_RETRY_DELAY * (RETRY_BACKOFF_FACTOR ** (self._retry_count - 1)),
+            MAX_RETRY_DELAY,
+        )
+        self._next_retry_time = time.monotonic() + delay
+
+        _LOGGER.warning(
+            "Connection failed to %s: %s (retry %d/%d, next attempt in %.1fs)",
+            self._ip,
+            error,
+            self._retry_count,
+            MAX_RETRY_ATTEMPTS,
+            delay,
+        )
 
     async def _close_connection(self) -> None:
         """Close connection and cleanup."""
@@ -98,11 +164,12 @@ class TcpClient:
                 self._writer.close()
                 await self._writer.wait_closed()
             except Exception as e:
-                _LOGGER.debug(f'Error while closing the connection to {self._ip}: {e}')
+                _LOGGER.debug("Error while closing the connection to %s: %s", self._ip, e)
             finally:
                 self._writer = None
                 self._reader = None
         self._available = False
+        self._read_buffer = ""  # Clear buffer on disconnect
 
     async def disconnect(self) -> None:
         """Public method to disconnect from device.
@@ -111,7 +178,9 @@ class TcpClient:
         """
         async with self._lock:
             await self._close_connection()
-            _LOGGER.debug(f"Disconnected from {self._ip}")
+            self._retry_count = 0
+            self._next_retry_time = 0.0
+            _LOGGER.debug("Disconnected from %s", self._ip)
 
     def is_connected(self) -> bool:
         """Check if connection is active.
@@ -132,7 +201,7 @@ class TcpClient:
 
     @property
     def check(self) -> bool:
-        """Alias for available property.
+        """Alias for available property (deprecated).
 
         Returns:
             True if device is available, False otherwise.
@@ -140,13 +209,13 @@ class TcpClient:
         return self.available
 
     @property
-    def dpid(self) -> List[str]:
+    def dpid(self) -> list[str]:
         """Return the list of data point IDs.
 
         Returns:
             List of data point IDs as strings.
         """
-        return self._dpid
+        return self._info.dpid
 
     @property
     def device_model_name(self) -> str:
@@ -155,7 +224,7 @@ class TcpClient:
         Returns:
             The device model name.
         """
-        return self._device_model_name
+        return self._info.device_model_name
 
     @property
     def device_name(self) -> str:
@@ -164,7 +233,7 @@ class TcpClient:
         Returns:
             The user-given device name, or empty string if not set.
         """
-        return self._device_name
+        return self._info.device_name
 
     @property
     def icon(self) -> str:
@@ -173,7 +242,7 @@ class TcpClient:
         Returns:
             The device icon identifier.
         """
-        return self._icon
+        return self._info.icon
 
     @property
     def device_type_code(self) -> str:
@@ -182,7 +251,7 @@ class TcpClient:
         Returns:
             The device type code (e.g., '00' for switch, '01' for light).
         """
-        return self._device_type_code
+        return self._info.device_type_code
 
     @property
     def device_id(self) -> str:
@@ -191,107 +260,133 @@ class TcpClient:
         Returns:
             The unique device identifier.
         """
-        return self._device_id
-    
+        return self._info.device_id
+
+    @property
+    def info(self) -> DeviceInfo:
+        """Return the full device info object.
+
+        Returns:
+            The DeviceInfo dataclass.
+        """
+        return self._info
+
     async def _device_info(self) -> None:
-        """
-        Get info for device model with timeout
-        """
-        _LOGGER.debug(f"Getting device info for {self._ip}")
+        """Get info for device model with timeout."""
+        _LOGGER.debug("Getting device info for %s", self._ip)
 
         if not self._writer:
-            _LOGGER.error(f"Cannot get device info for {self._ip}: no connection")
-            return None
+            _LOGGER.error("Cannot get device info for %s: no connection", self._ip)
+            return
 
         await self._only_send(CMD_INFO, {})
 
         try:
-            # Add timeout to read operation
-            resp = await asyncio.wait_for(self._reader.read(1024), timeout=3)
+            resp = await asyncio.wait_for(
+                self._reader.read(1024), timeout=COMMAND_TIMEOUT
+            )
             resp_json = json.loads(resp.strip())
-        except asyncio.TimeoutError:
-            _LOGGER.warning(f'_device_info timeout for {self._ip}')
-            return None
+        except TimeoutError:
+            _LOGGER.warning("_device_info timeout for %s", self._ip)
+            return
         except json.JSONDecodeError as e:
-            _LOGGER.debug(f'_device_info JSON decode error for {self._ip}: {e}')
-            return None
+            _LOGGER.debug("_device_info JSON decode error for %s: %s", self._ip, e)
+            return
         except Exception as e:
-            _LOGGER.debug(f'_device_info.recv.error for {self._ip}: {e}')
-            return None
+            _LOGGER.debug("_device_info.recv.error for %s: %s", self._ip, e)
+            return
 
-        if resp_json.get('msg') is None or not isinstance(resp_json['msg'], dict):
-            _LOGGER.debug(f'_device_info.recv.error1 for {self._ip}: Invalid response structure')
-            return None
+        msg = resp_json.get("msg")
+        if msg is None or not isinstance(msg, dict):
+            _LOGGER.debug("_device_info: Invalid response structure for %s", self._ip)
+            return
 
-        if resp_json['msg'].get('did') is None:
-            _LOGGER.debug(f'_device_info.recv.error2 for {self._ip}: Missing DID')
-            return None
+        if msg.get("did") is None:
+            _LOGGER.debug("_device_info: Missing DID for %s", self._ip)
+            return
 
-        self._device_id = resp_json['msg']['did']
+        self._info.device_id = msg["did"]
+        self._info.device_name = msg.get("name", "")
+        _LOGGER.debug("Device response for %s: %s", self._ip, msg)
 
-        # Get user-defined device name if available
-        self._device_name = resp_json['msg'].get('name', '')
-        _LOGGER.debug(f"Device response for {self._ip}: {resp_json['msg']}")
+        if msg.get("pid") is None:
+            _LOGGER.debug("_device_info: Missing PID for %s", self._ip)
+            return
 
-        if resp_json['msg'].get('pid') is None:
-            _LOGGER.debug(f'_device_info.recv.error3 for {self._ip}: Missing PID')
-            return None
-
-        self._pid = resp_json['msg']['pid']
-        pid_list = await async_get_pid_list()
+        self._info.pid = msg["pid"]
+        pid_list = await async_get_pid_list(self._hass)
 
         for item in pid_list:
             match = False
-            for item1 in item['m']:
-                if item1['pid'] == self._pid:
+            for model in item.get("m", []):
+                if model.get("pid") == self._info.pid:
                     match = True
-                    self._icon = item1['i']
-                    self._device_model_name = item1['n']
-                    self._dpid = [str(x) for x in item1['dpid']]
+                    self._info.icon = model.get("i", "")
+                    self._info.device_model_name = model.get("n", "")
+                    self._info.dpid = [str(x) for x in model.get("dpid", [])]
                     break
 
             if match:
-                self._device_type_code = item['c']
+                self._info.device_type_code = item.get("c", "")
                 break
 
-        _LOGGER.debug(f"Device Info for {self._ip}: ID={self._device_id}, Name={self._device_name}, Type={self._device_type_code}, PID={self._pid}, Model={self._device_model_name}")
-    
-    def _get_package(self, cmd: int, payload: dict) -> bytes:
+        _LOGGER.debug(
+            "Device Info for %s: ID=%s, Name=%s, Type=%s, PID=%s, Model=%s",
+            self._ip,
+            self._info.device_id,
+            self._info.device_name,
+            self._info.device_type_code,
+            self._info.pid,
+            self._info.device_model_name,
+        )
+
+    def _get_package(self, cmd: int, payload: dict[str, Any]) -> bytes:
+        """Build a command package to send to the device.
+
+        Args:
+            cmd: The command type.
+            payload: The payload data.
+
+        Returns:
+            Encoded package as bytes.
+
+        Raises:
+            ValueError: If the command type is invalid.
+        """
         self._sn = get_sn()
-        if CMD_SET == cmd:
+
+        if cmd == CMD_SET:
             message = {
-                'pv': 0,
-                'cmd': cmd,
-                'sn': self._sn,
-                'msg': {
-                    'attr': [int(item) for item in payload.keys()],
-                    'data': payload,
-                }
+                "pv": 0,
+                "cmd": cmd,
+                "sn": self._sn,
+                "msg": {
+                    "attr": [int(item) for item in payload.keys()],
+                    "data": payload,
+                },
             }
-        elif CMD_QUERY == cmd:
+        elif cmd == CMD_QUERY:
             message = {
-                'pv': 0,
-                'cmd': cmd,
-                'sn': self._sn,
-                'msg': {
-                    'attr': [0],
-                }
+                "pv": 0,
+                "cmd": cmd,
+                "sn": self._sn,
+                "msg": {"attr": [0]},
             }
-        elif CMD_INFO == cmd:
+        elif cmd == CMD_INFO:
             message = {
-                'pv': 0,
-                'cmd': cmd,
-                'sn': self._sn,
-                'msg': {}
+                "pv": 0,
+                "cmd": cmd,
+                "sn": self._sn,
+                "msg": {},
             }
         else:
-            raise Exception('CMD is not valid')
-        
-        payload_str = json.dumps(message, separators=(',', ':',))
-        _LOGGER.debug(f'_package={payload_str}')
-        return bytes(payload_str + "\r\n", encoding='utf8')
-    
-    async def _send_receiver(self, cmd: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+            raise ValueError(f"Invalid command type: {cmd}")
+
+        payload_str = json.dumps(message, separators=(",", ":"))
+        _LOGGER.debug("_package=%s", payload_str)
+        return (payload_str + "\r\n").encode("utf-8")
+
+    async def _send_receiver(self, cmd: int, payload: dict[str, Any]) -> dict[str, Any]:
         """Send command and wait for response with improved reliability.
 
         Args:
@@ -304,7 +399,9 @@ class TcpClient:
         async with self._lock:
             return await self._send_receiver_internal(cmd, payload)
 
-    async def _send_receiver_internal(self, cmd: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _send_receiver_internal(
+        self, cmd: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         """Internal send/receive without lock (to avoid deadlock).
 
         This method should only be called when the lock is already held.
@@ -318,74 +415,95 @@ class TcpClient:
         """
         # Check connection and reconnect if needed
         if not self.is_connected():
-            _LOGGER.debug(f"Connection lost to {self._ip}, reconnecting...")
+            _LOGGER.debug("Connection lost to %s, reconnecting...", self._ip)
             if not await self._connect_internal():
                 self._available = False
                 return {}
 
         try:
-            _LOGGER.debug(f"Sending command {cmd} to {self._ip} with payload {payload}")
+            _LOGGER.debug("Sending command %d to %s with payload %s", cmd, self._ip, payload)
             self._writer.write(self._get_package(cmd, payload))
-            await asyncio.wait_for(self._writer.drain(), timeout=3)
+            await asyncio.wait_for(self._writer.drain(), timeout=COMMAND_TIMEOUT)
 
-            # Wait for response with improved logic
-            max_attempts = 3  # Reduced from 5 for faster failure detection
-            for attempt in range(max_attempts):
+            # Wait for response with retry logic for timeouts
+            for attempt in range(MAX_RETRY_ATTEMPTS):
                 try:
-                    res = await asyncio.wait_for(self._reader.read(1024), timeout=2)  # Reduced from 3s
+                    res = await asyncio.wait_for(
+                        self._reader.read(1024), timeout=RESPONSE_TIMEOUT
+                    )
                     if not res:
-                        _LOGGER.debug(f"Empty response from {self._ip}")
+                        _LOGGER.debug("Empty response from %s", self._ip)
+                        self._available = False
+                        self._last_error = "Empty response"
                         await self._close_connection()
-                        break
+                        return {}
 
-                    res_str = res.decode('utf-8', errors='ignore')
-                    _LOGGER.debug(f"Received from {self._ip}: {res_str}")
+                    res_str = res.decode("utf-8", errors="ignore")
+                    _LOGGER.debug("Received from %s: %s", self._ip, res_str)
 
+                    # Check if response contains our serial number
                     if self._sn in res_str:
                         try:
                             response_payload = json.loads(res_str.strip())
                         except json.JSONDecodeError:
-                            _LOGGER.debug(f"JSON decode error from {self._ip}")
+                            _LOGGER.debug("JSON decode error from %s", self._ip)
+                            # Try again - might be partial data
                             continue
 
-                        if response_payload is None or len(response_payload) == 0:
+                        if not response_payload:
                             return {}
 
-                        if response_payload.get('msg') is None or not isinstance(response_payload['msg'], dict):
+                        msg = response_payload.get("msg")
+                        if msg is None or not isinstance(msg, dict):
                             return {}
 
                         # Capture attr if present to populate dpid if missing
-                        if 'attr' in response_payload['msg'] and isinstance(response_payload['msg']['attr'], list):
-                            if not self._dpid:
-                                self._dpid = [str(x) for x in response_payload['msg']['attr']]
-                                _LOGGER.info(f"Discovered DPIDs from query: {self._dpid}")
+                        if "attr" in msg and isinstance(msg["attr"], list):
+                            if not self._info.dpid:
+                                self._info.dpid = [str(x) for x in msg["attr"]]
+                                _LOGGER.info("Discovered DPIDs from query: %s", self._info.dpid)
 
-                        if response_payload['msg'].get('data') is None or not isinstance(response_payload['msg']['data'], dict):
+                        data = msg.get("data")
+                        if data is None or not isinstance(data, dict):
                             return {}
 
                         self._available = True
                         self._last_error = None
-                        return response_payload['msg']['data']
+                        return data
+                    else:
+                        # Response received but wrong serial number - stale data, try again
+                        _LOGGER.debug(
+                            "Response from %s with different SN, reading again", self._ip
+                        )
+                        continue
 
-                except asyncio.TimeoutError:
-                    _LOGGER.debug(f"Timeout waiting for response from {self._ip} (attempt {attempt+1}/{max_attempts})")
-                    if attempt == max_attempts - 1:
+                except TimeoutError:
+                    _LOGGER.debug(
+                        "Timeout waiting for response from %s (attempt %d/%d)",
+                        self._ip,
+                        attempt + 1,
+                        MAX_RETRY_ATTEMPTS,
+                    )
+                    # Only mark unavailable on final attempt
+                    if attempt == MAX_RETRY_ATTEMPTS - 1:
                         self._available = False
                         self._last_error = "Response timeout"
+                        return {}
                     continue
 
-            _LOGGER.warning(f"No valid response received from {self._ip}")
+            # All retry attempts exhausted
+            _LOGGER.warning("No valid response received from %s after %d attempts", self._ip, MAX_RETRY_ATTEMPTS)
             self._available = False
             return {}
 
         except Exception as e:
-            _LOGGER.warning(f'_send_receiver error for {self._ip}: {e}')
+            _LOGGER.warning("_send_receiver error for %s: %s", self._ip, e)
             self._available = False
             self._last_error = str(e)
             await self._close_connection()
             return {}
-    
-    async def _only_send(self, cmd: int, payload: Dict[str, Any]) -> None:
+
+    async def _only_send(self, cmd: int, payload: dict[str, Any]) -> None:
         """Send command without waiting for response (used internally).
 
         Args:
@@ -393,21 +511,21 @@ class TcpClient:
             payload: The payload data to send.
         """
         if not self._writer:
-            _LOGGER.warning(f"Cannot send to {self._ip}: no connection")
+            _LOGGER.warning("Cannot send to %s: no connection", self._ip)
             return
 
         try:
-            _LOGGER.debug(f"Sending only command {cmd} to {self._ip}")
+            _LOGGER.debug("Sending only command %d to %s", cmd, self._ip)
             self._writer.write(self._get_package(cmd, payload))
-            await asyncio.wait_for(self._writer.drain(), timeout=3)
-        except asyncio.TimeoutError:
-            _LOGGER.error(f"Send timeout to {self._ip}")
+            await asyncio.wait_for(self._writer.drain(), timeout=COMMAND_TIMEOUT)
+        except TimeoutError:
+            _LOGGER.error("Send timeout to %s", self._ip)
             self._available = False
         except Exception as e:
-            _LOGGER.error(f"Send failed to {self._ip}: {e}")
+            _LOGGER.error("Send failed to %s: %s", self._ip, e)
             self._available = False
 
-    async def control(self, payload: Dict[str, Any]) -> bool:
+    async def control(self, payload: dict[str, Any]) -> bool:
         """Send control command and wait for confirmation.
 
         Args:
@@ -419,53 +537,62 @@ class TcpClient:
         async with self._lock:
             # Check connection and reconnect if needed
             if not self.is_connected():
-                _LOGGER.debug(f"Connection lost to {self._ip}, reconnecting for control...")
+                _LOGGER.debug("Connection lost to %s, reconnecting for control...", self._ip)
                 if not await self._connect_internal():
                     self._available = False
                     return False
 
             try:
-                _LOGGER.debug(f"Sending control command to {self._ip} with payload {payload}")
+                _LOGGER.debug("Sending control command to %s with payload %s", self._ip, payload)
                 self._writer.write(self._get_package(CMD_SET, payload))
-                await asyncio.wait_for(self._writer.drain(), timeout=3)
+                await asyncio.wait_for(self._writer.drain(), timeout=COMMAND_TIMEOUT)
 
                 # Wait for acknowledgment with shorter timeout
                 try:
-                    res = await asyncio.wait_for(self._reader.read(1024), timeout=2)
+                    res = await asyncio.wait_for(
+                        self._reader.read(1024), timeout=RESPONSE_TIMEOUT
+                    )
                     if res:
-                        res_str = res.decode('utf-8', errors='ignore')
-                        _LOGGER.debug(f"Control response from {self._ip}: {res_str}")
+                        res_str = res.decode("utf-8", errors="ignore")
+                        _LOGGER.debug("Control response from %s: %s", self._ip, res_str)
 
                         # Check if response contains our serial number (acknowledgment)
                         if self._sn in res_str:
                             self._available = True
                             self._last_error = None
                             return True
+                        else:
+                            # Response received but wrong serial number - may be stale data
+                            # Consider command successful since device responded
+                            _LOGGER.debug(
+                                "Response from %s with different SN, assuming success", self._ip
+                            )
+                            self._available = True
+                            self._last_error = None
+                            return True
                     else:
-                        _LOGGER.warning(f"Empty control response from {self._ip}")
+                        _LOGGER.warning("Empty control response from %s", self._ip)
                         self._available = False
                         self._last_error = "Empty response"
                         await self._close_connection()
                         return False
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Some devices may not send acknowledgment, but command might still work
-                    _LOGGER.debug(f"No acknowledgment from {self._ip}, but command may have succeeded")
+                    _LOGGER.debug(
+                        "No acknowledgment from %s, but command may have succeeded", self._ip
+                    )
                     self._available = True
                     self._last_error = None
                     return True
 
-                self._available = True
-                self._last_error = None
-                return True
-
             except Exception as e:
-                _LOGGER.warning(f'Control command failed for {self._ip}: {e}')
+                _LOGGER.warning("Control command failed for %s: %s", self._ip, e)
                 self._available = False
                 self._last_error = str(e)
                 await self._close_connection()
                 return False
 
-    async def query(self) -> Dict[str, Any]:
+    async def query(self) -> dict[str, Any]:
         """Query device state.
 
         Returns:
@@ -473,7 +600,7 @@ class TcpClient:
         """
         return await self._send_receiver(CMD_QUERY, {})
 
-    async def _query_internal(self) -> Dict[str, Any]:
+    async def _query_internal(self) -> dict[str, Any]:
         """Internal query without lock (to avoid deadlock).
 
         This method should only be called when the lock is already held.

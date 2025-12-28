@@ -1,6 +1,9 @@
 """Platform for CozyLife light integration."""
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_COLOR_TEMP_KELVIN,
@@ -10,18 +13,26 @@ from homeassistant.components.light import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
-from typing import Any, Optional, Set, Tuple, Dict
+
 from .const import (
     DOMAIN,
     LIGHT_TYPE_CODE,
+    DPID_TEMP,
+    DPID_BRIGHT,
+    DPID_HUE,
+    DPID_SAT,
+    DPID_SWITCH,
+    DPID_WORK_MODE,
+    SATURATION_SCALE,
+    MIN_COLOR_TEMP_KELVIN,
+    MAX_COLOR_TEMP_KELVIN,
 )
+from .entity import CozyLifeEntity
 from .tcp_client import TcpClient
-import logging
 
 _LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -29,45 +40,19 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the CozyLife Light from a config entry."""
-    lights = []
-    for item in hass.data[DOMAIN][config_entry.entry_id]['tcp_client']:
-        if LIGHT_TYPE_CODE == item.device_type_code:
-            lights.append(CozyLifeLight(item))
-    
+    lights = [
+        CozyLifeLight(client)
+        for client in hass.data[DOMAIN][config_entry.entry_id]["tcp_client"]
+        if client.device_type_code == LIGHT_TYPE_CODE
+    ]
     async_add_entities(lights)
 
-async def async_setup_platform(
-    hass: HomeAssistant,
-    config: ConfigType,
-    async_add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None
-) -> None:
-    """Set up the sensor platform."""
-    # We only want this platform to be set up via discovery.
-    _LOGGER.info(
-        f'setup_platform.hass={hass},config={config},add_entities={async_add_entities},discovery_info={discovery_info}')
-    
-    if discovery_info is None:
-        return
-    
-    # This legacy method might fail if hass.data[DOMAIN] is not populated as expected
-    # But we keep it for reference or if we decide to support legacy setup later.
-    if 'tcp_client' in hass.data[DOMAIN]:
-        lights = []
-        for item in hass.data[DOMAIN]['tcp_client']:
-            if LIGHT_TYPE_CODE == item.device_type_code:
-                lights.append(CozyLifeLight(item))
-        
-        async_add_entities(lights)
 
-
-class CozyLifeLight(LightEntity):
+class CozyLifeLight(CozyLifeEntity, LightEntity):
     """Representation of a CozyLife light."""
 
-    _attr_min_color_temp_kelvin: int = 2000
-    _attr_max_color_temp_kelvin: int = 6500
-    _attr_assumed_state: bool = True  # Use optimistic updates
-    _attr_has_entity_name: bool = True
+    _attr_min_color_temp_kelvin: int = MIN_COLOR_TEMP_KELVIN
+    _attr_max_color_temp_kelvin: int = MAX_COLOR_TEMP_KELVIN
 
     def __init__(self, tcp_client: TcpClient) -> None:
         """Initialize the light entity.
@@ -75,50 +60,44 @@ class CozyLifeLight(LightEntity):
         Args:
             tcp_client: The TCP client for device communication.
         """
-        _LOGGER.debug(f'Initializing CozyLifeLight for device {tcp_client.device_id}')
-        self._tcp_client: TcpClient = tcp_client
-        self._unique_id: str = tcp_client.device_id
-        # Use model name and type code as the display name
-        self._device_name: str = f"{tcp_client.device_model_name} ({tcp_client.device_type_code})"
-        # Entity name set to None so HA uses device name directly
-        self._attr_name: Optional[str] = None
+        super().__init__(tcp_client)
+        _LOGGER.debug("Initializing CozyLifeLight for device %s", tcp_client.device_id)
 
-        # Initialize state attributes
-        self._attr_is_on: bool = False
-        self._attr_brightness: Optional[int] = None
-        self._attr_hs_color: Optional[Tuple[float, float]] = None
-        self._attr_color_temp: Optional[int] = None
-        self._attr_color_temp_kelvin: Optional[int] = None
-        self._attr_supported_color_modes: Set[ColorMode] = {ColorMode.BRIGHTNESS}
+        # Light-specific state attributes
+        self._attr_brightness: int | None = None
+        self._attr_hs_color: tuple[float, float] | None = None
+        self._attr_color_temp: int | None = None
+        self._attr_color_temp_kelvin: int | None = None
+        self._attr_supported_color_modes: set[ColorMode] = {ColorMode.BRIGHTNESS}
         self._attr_color_mode: ColorMode = ColorMode.BRIGHTNESS
-        self._state: Dict[str, Any] = {}
 
-        # Device info for HA device registry
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, tcp_client.device_id)},
-            name=self._device_name,
-            manufacturer="CozyLife",
-            model=tcp_client.device_model_name or "Light",
-        )
+    def _get_default_model(self) -> str:
+        """Return the default model name for lights."""
+        return "Light"
 
     async def async_added_to_hass(self) -> None:
         """Run when entity about to be added to hass."""
-        await self._tcp_client.connect()
+        await super().async_added_to_hass()
         self._update_features()
+        # Fetch initial state from device
+        await self.async_update()
 
     def _update_features(self) -> None:
         """Update supported features based on device capabilities."""
+        dpid = self._tcp_client.dpid
         _LOGGER.debug(
-            f'before:{self._unique_id}._attr_color_mode={self._attr_color_mode}.'
-            f'_attr_supported_color_modes={self._attr_supported_color_modes}.'
-            f'dpid={self._tcp_client.dpid}'
+            "Before update: %s color_mode=%s, supported=%s, dpid=%s",
+            self._unique_id,
+            self._attr_color_mode,
+            self._attr_supported_color_modes,
+            dpid,
         )
 
-        supported: Set[ColorMode] = {ColorMode.BRIGHTNESS}
-        if '3' in self._tcp_client.dpid:
+        supported: set[ColorMode] = {ColorMode.BRIGHTNESS}
+        if DPID_TEMP in dpid:
             supported.add(ColorMode.COLOR_TEMP)
 
-        if '5' in self._tcp_client.dpid or '6' in self._tcp_client.dpid:
+        if DPID_HUE in dpid or DPID_SAT in dpid:
             supported.add(ColorMode.HS)
 
         # Clean up supported modes - HS and COLOR_TEMP imply brightness
@@ -134,84 +113,81 @@ class CozyLifeLight(LightEntity):
         self._attr_supported_color_modes = supported
 
         _LOGGER.debug(
-            f'after:{self._unique_id}._attr_color_mode={self._attr_color_mode}.'
-            f'_attr_supported_color_modes={self._attr_supported_color_modes}.'
-            f'dpid={self._tcp_client.dpid}'
+            "After update: %s color_mode=%s, supported=%s",
+            self._unique_id,
+            self._attr_color_mode,
+            self._attr_supported_color_modes,
         )
-    
+
     async def async_update(self) -> None:
         """Query device and update attributes."""
         self._state = await self._tcp_client.query()
-        _LOGGER.debug(f'_state={self._state}')
+        _LOGGER.debug("Light state: %s", self._state)
 
         if not self._state:
             return
 
-        self._attr_is_on = self._state.get('1', 0) > 0
+        # Check if device is on (non-zero value)
+        self._attr_is_on = bool(self._state.get(DPID_SWITCH, 0))
 
-        if '4' in self._state:
-            self._attr_brightness = int(self._state['4'] / 4)
+        if DPID_BRIGHT in self._state:
+            # Device uses 0-1000, HA uses 0-255
+            # Use proper rounding for accurate mapping
+            device_brightness = self._state[DPID_BRIGHT]
+            self._attr_brightness = min(round(device_brightness * 255 / 1000), 255)
 
-        if '5' in self._state and '6' in self._state:
+        if DPID_HUE in self._state and DPID_SAT in self._state:
             self._attr_hs_color = (
-                float(self._state['5']),
-                float(self._state['6']) / 10
+                float(self._state[DPID_HUE]),
+                float(self._state[DPID_SAT]) / SATURATION_SCALE,
             )
 
-        if '3' in self._state:
+        if DPID_TEMP in self._state:
             # 0-1000 map to 500-153 mireds (2000K-6500K)
             # mireds = 500 - (value / 2)
-            mireds = 500 - int(self._state['3'] / 2)
+            mireds = 500 - int(self._state[DPID_TEMP] / 2)
             # Clamp mireds to valid range (153-500 for 2000K-6500K)
             mireds = max(153, min(500, mireds))
             self._attr_color_temp = mireds
-            self._attr_color_temp_kelvin = int(1000000 / mireds)
+            # Prevent division by zero
+            self._attr_color_temp_kelvin = int(1000000 / max(mireds, 1))
 
     @property
-    def available(self) -> bool:
-        """Return if the device is available."""
-        return self._tcp_client.available
-
-    @property
-    def is_on(self) -> bool:
-        """Return True if entity is on."""
-        return self._attr_is_on
-
-    @property
-    def color_temp_kelvin(self) -> Optional[int]:
+    def color_temp_kelvin(self) -> int | None:
         """Return the CT color value in Kelvin."""
         return self._attr_color_temp_kelvin
 
-    @property
-    def unique_id(self) -> str:
-        """Return a unique ID."""
-        return self._unique_id
-
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the entity on."""
-        brightness: Optional[int] = kwargs.get(ATTR_BRIGHTNESS)
-        colortemp_kelvin: Optional[int] = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
-        hs_color: Optional[Tuple[float, float]] = kwargs.get(ATTR_HS_COLOR)
+        brightness: int | None = kwargs.get(ATTR_BRIGHTNESS)
+        colortemp_kelvin: int | None = kwargs.get(ATTR_COLOR_TEMP_KELVIN)
+        hs_color: tuple[float, float] | None = kwargs.get(ATTR_HS_COLOR)
 
-        _LOGGER.debug(f'turn_on.kwargs={kwargs}')
+        _LOGGER.debug("turn_on kwargs=%s", kwargs)
 
-        payload: Dict[str, int] = {'1': 255, '2': 0}
+        payload: dict[str, int] = {DPID_SWITCH: 255, DPID_WORK_MODE: 0}
+
         if brightness is not None:
-            payload['4'] = brightness * 4
+            # Clamp to valid range (0-1000) to prevent overflow
+            # brightness is 0-255, device expects 0-1000
+            device_brightness = min(int(brightness * 1000 / 255), 1000)
+            payload[DPID_BRIGHT] = device_brightness
 
         if hs_color is not None:
-            payload['5'] = int(hs_color[0])
-            payload['6'] = int(hs_color[1] * 10)
+            payload[DPID_HUE] = int(hs_color[0])
+            payload[DPID_SAT] = int(hs_color[1] * SATURATION_SCALE)
 
         if colortemp_kelvin is not None:
             # mireds = 1000000 / kelvin
             # value = 1000 - mireds * 2
-            mireds = 1000000 / colortemp_kelvin
+            # Prevent division by zero
+            safe_kelvin = max(colortemp_kelvin, 1)
+            mireds = 1000000 / safe_kelvin
             val = max(0, min(1000, int(1000 - mireds * 2)))
-            payload['3'] = val
+            payload[DPID_TEMP] = val
 
-        # Send control command - now waits for confirmation
-        success = await self._tcp_client.control(payload)
+        # Send control command
+        success = await self._async_send_command(payload)
 
         if success:
             # Update local state optimistically
@@ -222,37 +198,33 @@ class CozyLifeLight(LightEntity):
                 self._attr_hs_color = hs_color
             if colortemp_kelvin is not None:
                 self._attr_color_temp_kelvin = colortemp_kelvin
-            # State will be synced on next poll - no need for immediate async_update
             self.async_write_ha_state()
         else:
-            _LOGGER.warning(f"Failed to turn on {self._device_name}")
+            _LOGGER.warning("Failed to turn on %s", self._device_name)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the entity off."""
-        _LOGGER.debug(f'turn_off.kwargs={kwargs}')
+        _LOGGER.debug("turn_off kwargs=%s", kwargs)
 
-        # Send control command - now waits for confirmation
-        success = await self._tcp_client.control({'1': 0})
+        success = await self._async_send_command({DPID_SWITCH: 0})
 
         if success:
-            # Update local state optimistically
             self._attr_is_on = False
-            # State will be synced on next poll - no need for immediate async_update
             self.async_write_ha_state()
         else:
-            _LOGGER.warning(f"Failed to turn off {self._device_name}")
+            _LOGGER.warning("Failed to turn off %s", self._device_name)
 
     @property
-    def hs_color(self) -> Optional[Tuple[float, float]]:
+    def hs_color(self) -> tuple[float, float] | None:
         """Return the hue and saturation color value [float, float]."""
         return self._attr_hs_color
 
     @property
-    def brightness(self) -> Optional[int]:
+    def brightness(self) -> int | None:
         """Return the brightness of this light between 0..255."""
         return self._attr_brightness
 
     @property
-    def color_mode(self) -> Optional[ColorMode]:
+    def color_mode(self) -> ColorMode | None:
         """Return the color mode of the light."""
         return self._attr_color_mode

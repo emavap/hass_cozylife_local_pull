@@ -24,7 +24,6 @@ class TestIntegrationSetup:
         mock_async_get_pid_list, mock_get_sn
     ):
         """Test setup entry with UDP discovery."""
-        # Create a mock tcp_client that doesn't start background tasks
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(return_value=True)
         mock_client.device_type_code = "01"
@@ -37,7 +36,7 @@ class TestIntegrationSetup:
             'custom_components.hass_cozylife_local_pull.async_discover_devices',
             return_value=[]
         ), patch(
-            'custom_components.hass_cozylife_local_pull.tcp_client',
+            'custom_components.hass_cozylife_local_pull.TcpClient',
             return_value=mock_client
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
@@ -56,6 +55,7 @@ class TestIntegrationSetup:
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(return_value=True)
         mock_client.device_type_code = "01"
+        mock_client._ip = "192.168.1.101"
 
         with patch(
             'custom_components.hass_cozylife_local_pull.get_ip',
@@ -64,7 +64,7 @@ class TestIntegrationSetup:
             'custom_components.hass_cozylife_local_pull.async_discover_devices',
             return_value=['192.168.1.101']
         ), patch(
-            'custom_components.hass_cozylife_local_pull.tcp_client',
+            'custom_components.hass_cozylife_local_pull.TcpClient',
             return_value=mock_client
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
@@ -72,6 +72,8 @@ class TestIntegrationSetup:
             result = await async_setup_entry(hass, mock_config_entry)
 
         assert result is True
+        assert DOMAIN in hass.data
+        assert mock_config_entry.entry_id in hass.data[DOMAIN]
 
     async def test_async_setup_entry_with_manual_ip(
         self, hass: HomeAssistant, mock_async_get_pid_list, mock_get_sn
@@ -97,7 +99,7 @@ class TestIntegrationSetup:
             'custom_components.hass_cozylife_local_pull.async_discover_devices',
             return_value=[]
         ), patch(
-            'custom_components.hass_cozylife_local_pull.tcp_client',
+            'custom_components.hass_cozylife_local_pull.TcpClient',
             return_value=mock_client
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
@@ -167,7 +169,7 @@ class TestIntegrationSetup:
             'custom_components.hass_cozylife_local_pull.async_discover_devices',
             return_value=['192.168.1.101']
         ), patch(
-            'custom_components.hass_cozylife_local_pull.tcp_client',
+            'custom_components.hass_cozylife_local_pull.TcpClient',
             return_value=mock_client
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
@@ -177,4 +179,3 @@ class TestIntegrationSetup:
         assert result is True
         # Should have attempted to connect to all 3 unique IPs
         # (UDP: 192.168.1.100, Hostname: 192.168.1.101, Manual: 192.168.1.200)
-

@@ -43,6 +43,8 @@ class TestCozyLifeSwitch:
 
     async def test_switch_added_to_hass(self, mock_tcp_client, mock_hass):
         """Test switch added to Home Assistant."""
+        # Mock is_connected to return False so connect is called
+        mock_tcp_client.is_connected = MagicMock(return_value=False)
         switch = CozyLifeSwitch(mock_tcp_client)
         switch.hass = mock_hass
 
