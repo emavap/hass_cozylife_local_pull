@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
@@ -130,6 +131,9 @@ class TcpClient:
                 timeout=self._connection_timeout,
             )
 
+            # Enable TCP keep-alive to detect dead connections
+            self._configure_socket_keepalive()
+
             # Get device info with timeout
             await asyncio.wait_for(self._device_info(), timeout=self._connection_timeout)
 
@@ -177,6 +181,48 @@ class TcpClient:
             MAX_RETRY_ATTEMPTS,
             delay,
         )
+
+    def _configure_socket_keepalive(self) -> None:
+        """Configure TCP keep-alive on the socket to detect dead connections.
+
+        Keep-alive sends periodic probes to detect if the connection is still alive.
+        This helps detect when a device goes offline without properly closing the connection.
+        """
+        if not self._writer:
+            return
+
+        try:
+            # Get the underlying socket
+            sock = self._writer.get_extra_info("socket")
+            if sock is None:
+                _LOGGER.debug("Could not get socket for keep-alive configuration")
+                return
+
+            # Enable TCP keep-alive
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+
+            # Platform-specific keep-alive settings
+            # These values determine how quickly we detect a dead connection
+            if hasattr(socket, "TCP_KEEPIDLE"):
+                # Linux: time before first probe (seconds)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+            if hasattr(socket, "TCP_KEEPINTVL"):
+                # Linux: interval between probes (seconds)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+            if hasattr(socket, "TCP_KEEPCNT"):
+                # Linux: number of failed probes before connection is considered dead
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+
+            # macOS uses TCP_KEEPALIVE instead of TCP_KEEPIDLE
+            if hasattr(socket, "TCP_KEEPALIVE"):
+                # macOS: time before first probe (seconds)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 30)
+
+            _LOGGER.debug("TCP keep-alive enabled for %s", self._ip)
+
+        except Exception as e:
+            # Keep-alive is optional, don't fail the connection if it doesn't work
+            _LOGGER.debug("Could not configure TCP keep-alive for %s: %s", self._ip, e)
 
     async def _close_connection(self) -> None:
         """Close connection and cleanup."""

@@ -46,9 +46,10 @@ API_DOMAIN = "api-us.doiting.com"
 
 # Connection timeout defaults (in seconds)
 # These can be overridden via config/options flow
+# Increased response timeout from 2s to 3s to reduce connection drops on slow devices
 DEFAULT_CONNECTION_TIMEOUT = 5
 DEFAULT_COMMAND_TIMEOUT = 3
-DEFAULT_RESPONSE_TIMEOUT = 2
+DEFAULT_RESPONSE_TIMEOUT = 3
 
 # Config keys for timeouts
 CONF_CONNECTION_TIMEOUT = "connection_timeout"
