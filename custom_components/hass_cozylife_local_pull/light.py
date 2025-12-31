@@ -81,7 +81,6 @@ class CozyLifeLight(CozyLifeEntity, LightEntity):
         # Light-specific state attributes
         self._attr_brightness: int | None = None
         self._attr_hs_color: tuple[float, float] | None = None
-        self._attr_color_temp: int | None = None
         self._attr_color_temp_kelvin: int | None = None
         self._attr_supported_color_modes: set[ColorMode] = {ColorMode.BRIGHTNESS}
         self._attr_color_mode: ColorMode = ColorMode.BRIGHTNESS
@@ -158,14 +157,17 @@ class CozyLifeLight(CozyLifeEntity, LightEntity):
             )
 
         if DPID_TEMP in self._state:
-            # 0-1000 map to 500-153 mireds (2000K-6500K)
-            # mireds = 500 - (value / 2)
-            mireds = 500 - int(self._state[DPID_TEMP] / 2)
-            # Clamp mireds to valid range (153-500 for 2000K-6500K)
-            mireds = max(153, min(500, mireds))
-            self._attr_color_temp = mireds
-            # Prevent division by zero
-            self._attr_color_temp_kelvin = int(1000000 / max(mireds, 1))
+            # Device uses 0-1000 for color temp
+            # 0 = warmest (2000K), 1000 = coolest (6500K)
+            # Linear interpolation: kelvin = MIN + (value / 1000) * (MAX - MIN)
+            device_temp = self._state[DPID_TEMP]
+            kelvin = MIN_COLOR_TEMP_KELVIN + int(
+                device_temp * (MAX_COLOR_TEMP_KELVIN - MIN_COLOR_TEMP_KELVIN) / 1000
+            )
+            # Clamp to valid range
+            self._attr_color_temp_kelvin = max(
+                MIN_COLOR_TEMP_KELVIN, min(MAX_COLOR_TEMP_KELVIN, kelvin)
+            )
 
     @property
     def color_temp_kelvin(self) -> int | None:
@@ -193,13 +195,18 @@ class CozyLifeLight(CozyLifeEntity, LightEntity):
             payload[DPID_SAT] = int(hs_color[1] * SATURATION_SCALE)
 
         if colortemp_kelvin is not None:
-            # mireds = 1000000 / kelvin
-            # value = 1000 - mireds * 2
-            # Prevent division by zero
-            safe_kelvin = max(colortemp_kelvin, 1)
-            mireds = 1000000 / safe_kelvin
-            val = max(0, min(1000, int(1000 - mireds * 2)))
-            payload[DPID_TEMP] = val
+            # Convert kelvin to device value (0-1000)
+            # 0 = warmest (MIN_KELVIN), 1000 = coolest (MAX_KELVIN)
+            # Inverse linear interpolation: value = (kelvin - MIN) / (MAX - MIN) * 1000
+            clamped_kelvin = max(
+                MIN_COLOR_TEMP_KELVIN, min(MAX_COLOR_TEMP_KELVIN, colortemp_kelvin)
+            )
+            val = int(
+                (clamped_kelvin - MIN_COLOR_TEMP_KELVIN)
+                * 1000
+                / (MAX_COLOR_TEMP_KELVIN - MIN_COLOR_TEMP_KELVIN)
+            )
+            payload[DPID_TEMP] = max(0, min(1000, val))
 
         # Send control command
         success = await self._async_send_command(payload)
