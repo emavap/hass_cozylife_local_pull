@@ -14,9 +14,13 @@ from .const import (
     CONF_CONNECTION_TIMEOUT,
     CONF_COMMAND_TIMEOUT,
     CONF_RESPONSE_TIMEOUT,
+    CONF_SCAN_INTERVAL,
     DEFAULT_CONNECTION_TIMEOUT,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_RESPONSE_TIMEOUT,
+    DEFAULT_SCAN_INTERVAL,
+    MIN_SCAN_INTERVAL,
+    MAX_SCAN_INTERVAL,
 )
 
 
@@ -47,6 +51,10 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema({
                 vol.Optional("ips", default=""): str,
+                vol.Optional(
+                    CONF_SCAN_INTERVAL,
+                    default=DEFAULT_SCAN_INTERVAL,
+                ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL)),
                 vol.Optional(
                     CONF_CONNECTION_TIMEOUT,
                     default=DEFAULT_CONNECTION_TIMEOUT,
@@ -168,11 +176,12 @@ class CozyLifeOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_timeouts(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Configure timeout settings."""
+        """Configure timeout and polling settings."""
         if user_input is not None:
-            # Save timeout settings
+            # Save timeout and polling settings
             new_data = {
                 **self.config_entry.data,
+                CONF_SCAN_INTERVAL: user_input[CONF_SCAN_INTERVAL],
                 CONF_CONNECTION_TIMEOUT: user_input[CONF_CONNECTION_TIMEOUT],
                 CONF_COMMAND_TIMEOUT: user_input[CONF_COMMAND_TIMEOUT],
                 CONF_RESPONSE_TIMEOUT: user_input[CONF_RESPONSE_TIMEOUT],
@@ -185,6 +194,9 @@ class CozyLifeOptionsFlowHandler(config_entries.OptionsFlow):
             return await self.async_step_init()
 
         # Get current values or defaults
+        current_scan_interval = self.config_entry.data.get(
+            CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+        )
         current_connection = self.config_entry.data.get(
             CONF_CONNECTION_TIMEOUT, DEFAULT_CONNECTION_TIMEOUT
         )
@@ -198,6 +210,10 @@ class CozyLifeOptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="timeouts",
             data_schema=vol.Schema({
+                vol.Optional(
+                    CONF_SCAN_INTERVAL,
+                    default=current_scan_interval,
+                ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL)),
                 vol.Optional(
                     CONF_CONNECTION_TIMEOUT,
                     default=current_connection,

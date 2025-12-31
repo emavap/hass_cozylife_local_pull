@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -19,9 +21,12 @@ from .const import (
     CONF_CONNECTION_TIMEOUT,
     CONF_COMMAND_TIMEOUT,
     CONF_RESPONSE_TIMEOUT,
+    CONF_SCAN_INTERVAL,
     DEFAULT_CONNECTION_TIMEOUT,
     DEFAULT_COMMAND_TIMEOUT,
     DEFAULT_RESPONSE_TIMEOUT,
+    DEFAULT_SCAN_INTERVAL,
+    HEALTH_CHECK_INTERVAL,
 )
 from .discovery import async_discover_devices
 from .tcp_client import TcpClient
@@ -140,8 +145,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "Found %d valid devices out of %d candidates", len(valid_clients), len(clients)
     )
 
+    # Set up background connection health monitor
+    async def async_connection_health_check(_now) -> None:
+        """Periodically check connection health and reconnect if needed."""
+        entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
+        clients_to_check = entry_data.get("tcp_client", [])
+
+        for client in clients_to_check:
+            try:
+                # If device is marked unavailable, try to reconnect
+                if not client.available:
+                    _LOGGER.debug(
+                        "Health check: attempting reconnection for %s", client._ip
+                    )
+                    await client.connect()
+                # If connection is stale (connected but not available), try to refresh
+                elif not client.is_connected() and client.available:
+                    _LOGGER.debug(
+                        "Health check: connection stale for %s, reconnecting", client._ip
+                    )
+                    await client.connect()
+            except Exception as e:
+                _LOGGER.debug("Health check error for %s: %s", client._ip, e)
+
+    # Schedule periodic health checks
+    cancel_health_check = async_track_time_interval(
+        hass,
+        async_connection_health_check,
+        timedelta(seconds=HEALTH_CHECK_INTERVAL),
+    )
+
+    # Get configured scan interval
+    scan_interval = entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+    _LOGGER.debug("Using scan interval: %s seconds", scan_interval)
+
     hass.data[DOMAIN][entry.entry_id] = {
         "tcp_client": valid_clients,
+        "cancel_health_check": cancel_health_check,
+        "scan_interval": scan_interval,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -160,8 +201,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        # Close all TCP connections before removing data
+        # Cancel the health check task
         entry_data = hass.data[DOMAIN].get(entry.entry_id, {})
+        cancel_health_check = entry_data.get("cancel_health_check")
+        if cancel_health_check:
+            cancel_health_check()
+
+        # Close all TCP connections before removing data
         clients = entry_data.get("tcp_client", [])
         for client in clients:
             try:

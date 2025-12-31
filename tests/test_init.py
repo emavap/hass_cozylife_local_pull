@@ -26,6 +26,7 @@ class TestIntegrationSetup:
         """Test setup entry with UDP discovery."""
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(return_value=True)
+        mock_client.disconnect = AsyncMock()
         mock_client.device_type_code = "01"
         mock_client._ip = "192.168.1.100"
 
@@ -40,12 +41,17 @@ class TestIntegrationSetup:
             return_value=mock_client
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
+        ), patch.object(
+            hass.config_entries, 'async_unload_platforms', new_callable=AsyncMock, return_value=True
         ):
             result = await async_setup_entry(hass, mock_config_entry)
 
-        assert result is True
-        assert DOMAIN in hass.data
-        assert mock_config_entry.entry_id in hass.data[DOMAIN]
+            assert result is True
+            assert DOMAIN in hass.data
+            assert mock_config_entry.entry_id in hass.data[DOMAIN]
+
+            # Clean up
+            await async_unload_entry(hass, mock_config_entry)
 
     async def test_async_setup_entry_with_hostname_discovery(
         self, hass: HomeAssistant, mock_config_entry,
@@ -54,6 +60,7 @@ class TestIntegrationSetup:
         """Test setup entry with hostname discovery."""
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(return_value=True)
+        mock_client.disconnect = AsyncMock()
         mock_client.device_type_code = "01"
         mock_client._ip = "192.168.1.101"
 
@@ -68,12 +75,17 @@ class TestIntegrationSetup:
             return_value=mock_client
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
+        ), patch.object(
+            hass.config_entries, 'async_unload_platforms', new_callable=AsyncMock, return_value=True
         ):
             result = await async_setup_entry(hass, mock_config_entry)
 
-        assert result is True
-        assert DOMAIN in hass.data
-        assert mock_config_entry.entry_id in hass.data[DOMAIN]
+            assert result is True
+            assert DOMAIN in hass.data
+            assert mock_config_entry.entry_id in hass.data[DOMAIN]
+
+            # Clean up
+            await async_unload_entry(hass, mock_config_entry)
 
     async def test_async_setup_entry_with_manual_ip(
         self, hass: HomeAssistant, mock_async_get_pid_list, mock_get_sn
@@ -90,6 +102,7 @@ class TestIntegrationSetup:
 
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(return_value=True)
+        mock_client.disconnect = AsyncMock()
         mock_client.device_type_code = "01"
 
         with patch(
@@ -103,11 +116,16 @@ class TestIntegrationSetup:
             return_value=mock_client
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
+        ), patch.object(
+            hass.config_entries, 'async_unload_platforms', new_callable=AsyncMock, return_value=True
         ):
             result = await async_setup_entry(hass, config_entry)
 
-        assert result is True
-        assert config_entry.entry_id in hass.data[DOMAIN]
+            assert result is True
+            assert config_entry.entry_id in hass.data[DOMAIN]
+
+            # Clean up
+            await async_unload_entry(hass, config_entry)
 
     async def test_async_setup_entry_no_devices(
         self, hass: HomeAssistant, mock_config_entry,
@@ -122,18 +140,24 @@ class TestIntegrationSetup:
             return_value=[]
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
+        ), patch.object(
+            hass.config_entries, 'async_unload_platforms', new_callable=AsyncMock, return_value=True
         ):
             # Should still return True even with no devices
             result = await async_setup_entry(hass, mock_config_entry)
 
-        assert result is True
+            assert result is True
+
+            # Clean up
+            await async_unload_entry(hass, mock_config_entry)
 
     async def test_async_unload_entry(
         self, hass: HomeAssistant, mock_config_entry
     ):
         """Test unloading a config entry."""
-        # Setup the entry first
-        hass.data[DOMAIN] = {mock_config_entry.entry_id: {'tcp_client': []}}
+        # Setup the entry first with a mock cancel function
+        mock_cancel = MagicMock()
+        hass.data[DOMAIN] = {mock_config_entry.entry_id: {'tcp_client': [], 'cancel_health_check': mock_cancel}}
 
         with patch(
             'homeassistant.config_entries.ConfigEntries.async_unload_platforms',
@@ -143,6 +167,7 @@ class TestIntegrationSetup:
 
         assert result is True
         assert mock_config_entry.entry_id not in hass.data[DOMAIN]
+        mock_cancel.assert_called_once()
 
     async def test_async_setup_entry_merges_discovery_methods(
         self, hass: HomeAssistant, mock_config_entry,
@@ -160,6 +185,7 @@ class TestIntegrationSetup:
 
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(return_value=True)
+        mock_client.disconnect = AsyncMock()
         mock_client.device_type_code = "01"
 
         with patch(
@@ -173,9 +199,14 @@ class TestIntegrationSetup:
             return_value=mock_client
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
+        ), patch.object(
+            hass.config_entries, 'async_unload_platforms', new_callable=AsyncMock, return_value=True
         ):
             result = await async_setup_entry(hass, config_entry)
 
-        assert result is True
-        # Should have attempted to connect to all 3 unique IPs
-        # (UDP: 192.168.1.100, Hostname: 192.168.1.101, Manual: 192.168.1.200)
+            assert result is True
+            # Should have attempted to connect to all 3 unique IPs
+            # (UDP: 192.168.1.100, Hostname: 192.168.1.101, Manual: 192.168.1.200)
+
+            # Clean up
+            await async_unload_entry(hass, config_entry)

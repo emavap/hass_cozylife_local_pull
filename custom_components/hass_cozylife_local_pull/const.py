@@ -70,5 +70,16 @@ RETRY_BACKOFF_FACTOR = 2.0
 # Periodic reconnection interval (in seconds)
 RECONNECT_INTERVAL = 60  # How often to try reconnecting unavailable devices
 
+# Connection health monitoring
+HEALTH_CHECK_INTERVAL = 30  # How often to check connection health (seconds)
+CONNECTION_IDLE_TIMEOUT = 120  # Close connections idle longer than this (seconds)
+MAX_CONSECUTIVE_FAILURES = 3  # Mark unavailable after this many consecutive failures
+
+# Polling configuration
+DEFAULT_SCAN_INTERVAL = 30  # Default polling interval in seconds
+MIN_SCAN_INTERVAL = 10  # Minimum allowed polling interval
+MAX_SCAN_INTERVAL = 300  # Maximum allowed polling interval
+CONF_SCAN_INTERVAL = "scan_interval"
+
 # Cache keys for hass.data
 CACHE_PID_LIST = "pid_list"

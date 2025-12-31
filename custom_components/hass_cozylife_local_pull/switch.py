@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
@@ -13,11 +14,15 @@ from .const import (
     DOMAIN,
     SWITCH_TYPE_CODE,
     DPID_SWITCH,
+    DEFAULT_SCAN_INTERVAL,
 )
 from .entity import CozyLifeEntity
 from .tcp_client import TcpClient
 
 _LOGGER = logging.getLogger(__name__)
+
+# Will be set dynamically based on config
+SCAN_INTERVAL = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
 
 
 async def async_setup_entry(
@@ -26,12 +31,21 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the CozyLife Switch from a config entry."""
+    # Get configured scan interval
+    entry_data = hass.data[DOMAIN][config_entry.entry_id]
+    scan_interval = entry_data.get("scan_interval", DEFAULT_SCAN_INTERVAL)
+
+    # Update module-level SCAN_INTERVAL for Home Assistant polling
+    global SCAN_INTERVAL
+    SCAN_INTERVAL = timedelta(seconds=scan_interval)
+    _LOGGER.debug("Switch platform using scan interval: %s seconds", scan_interval)
+
     switches = [
         CozyLifeSwitch(client)
-        for client in hass.data[DOMAIN][config_entry.entry_id]["tcp_client"]
+        for client in entry_data["tcp_client"]
         if client.device_type_code == SWITCH_TYPE_CODE
     ]
-    async_add_entities(switches)
+    async_add_entities(switches, update_before_add=True)
 
 
 class CozyLifeSwitch(CozyLifeEntity, SwitchEntity):

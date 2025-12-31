@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 
-from .const import DOMAIN, DPID_SWITCH
+from .const import DOMAIN, DPID_SWITCH, DEFAULT_SCAN_INTERVAL
 from .tcp_client import TcpClient
 
 _LOGGER = logging.getLogger(__name__)
+
+# Default scan interval - can be overridden per entity
+SCAN_INTERVAL = timedelta(seconds=DEFAULT_SCAN_INTERVAL)
 
 
 class CozyLifeEntity(Entity):

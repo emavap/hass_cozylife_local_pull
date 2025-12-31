@@ -19,6 +19,7 @@ from .const import (
     INITIAL_RETRY_DELAY,
     MAX_RETRY_DELAY,
     RETRY_BACKOFF_FACTOR,
+    MAX_CONSECUTIVE_FAILURES,
 )
 from .utils import async_get_pid_list, get_sn
 
@@ -87,7 +88,12 @@ class TcpClient:
         # Retry state for exponential backoff
         self._retry_count: int = 0
         self._next_retry_time: float = 0.0
-    
+
+        # Connection health tracking
+        self._consecutive_failures: int = 0
+        self._last_successful_communication: float = 0.0
+        self._last_activity: float = 0.0
+
     async def connect(self, force: bool = False) -> bool:
         """Establish connection to device with improved error handling.
 
@@ -146,6 +152,9 @@ class TcpClient:
             self._last_error = None
             self._retry_count = 0  # Reset on successful connection
             self._next_retry_time = 0.0
+            self._consecutive_failures = 0  # Reset failure counter
+            self._last_successful_communication = time.monotonic()
+            self._last_activity = time.monotonic()
             _LOGGER.info("Successfully connected to %s", self._ip)
             return True
 
@@ -162,9 +171,20 @@ class TcpClient:
         Args:
             error: Error message describing the failure.
         """
-        self._available = False
         self._last_error = error
         self._retry_count = min(self._retry_count + 1, MAX_RETRY_ATTEMPTS)
+        self._consecutive_failures += 1
+
+        # Only mark device unavailable after consecutive failures threshold
+        # This prevents brief network hiccups from causing unavailable state
+        if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            if self._available:
+                _LOGGER.warning(
+                    "Device %s marked unavailable after %d consecutive failures",
+                    self._ip,
+                    self._consecutive_failures,
+                )
+            self._available = False
 
         # Calculate next retry time with exponential backoff
         delay = min(
@@ -173,10 +193,11 @@ class TcpClient:
         )
         self._next_retry_time = time.monotonic() + delay
 
-        _LOGGER.warning(
-            "Connection failed to %s: %s (retry %d/%d, next attempt in %.1fs)",
+        _LOGGER.debug(
+            "Connection failed to %s: %s (failures: %d, retry %d/%d, next in %.1fs)",
             self._ip,
             error,
+            self._consecutive_failures,
             self._retry_count,
             MAX_RETRY_ATTEMPTS,
             delay,
@@ -247,6 +268,7 @@ class TcpClient:
             await self._close_connection()
             self._retry_count = 0
             self._next_retry_time = 0.0
+            self._consecutive_failures = 0
             _LOGGER.debug("Disconnected from %s", self._ip)
 
     def is_connected(self) -> bool:
@@ -256,6 +278,57 @@ class TcpClient:
             True if connection is active, False otherwise.
         """
         return self._writer is not None and not self._writer.is_closing()
+
+    def _mark_communication_success(self) -> None:
+        """Mark that communication was successful.
+
+        This resets failure counters and updates timing information.
+        Should be called after any successful device communication.
+        """
+        self._available = True
+        self._last_error = None
+        self._consecutive_failures = 0
+        self._last_successful_communication = time.monotonic()
+        self._last_activity = time.monotonic()
+
+    def _mark_communication_failure(self, error: str) -> None:
+        """Mark that communication failed.
+
+        Args:
+            error: Error message describing the failure.
+        """
+        self._last_error = error
+        self._consecutive_failures += 1
+        self._last_activity = time.monotonic()
+
+        # Only mark unavailable after consecutive failures threshold
+        if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            if self._available:
+                _LOGGER.warning(
+                    "Device %s marked unavailable after %d consecutive failures: %s",
+                    self._ip,
+                    self._consecutive_failures,
+                    error,
+                )
+            self._available = False
+
+    @property
+    def last_successful_communication(self) -> float:
+        """Return timestamp of last successful communication.
+
+        Returns:
+            Monotonic timestamp of last success, or 0 if never communicated.
+        """
+        return self._last_successful_communication
+
+    @property
+    def consecutive_failures(self) -> int:
+        """Return count of consecutive communication failures.
+
+        Returns:
+            Number of consecutive failures.
+        """
+        return self._consecutive_failures
 
     @property
     def available(self) -> bool:
@@ -488,7 +561,6 @@ class TcpClient:
         if not self.is_connected():
             _LOGGER.debug("Connection lost to %s, reconnecting...", self._ip)
             if not await self._connect_internal():
-                self._available = False
                 return {}
 
         try:
@@ -503,9 +575,8 @@ class TcpClient:
                         self._reader.read(1024), timeout=self._response_timeout
                     )
                     if not res:
-                        _LOGGER.debug("Empty response from %s", self._ip)
-                        self._available = False
-                        self._last_error = "Empty response"
+                        _LOGGER.debug("Empty response from %s, connection may be closed", self._ip)
+                        self._mark_communication_failure("Empty response")
                         await self._close_connection()
                         return {}
 
@@ -538,8 +609,8 @@ class TcpClient:
                         if data is None or not isinstance(data, dict):
                             return {}
 
-                        self._available = True
-                        self._last_error = None
+                        # Success! Mark communication as successful
+                        self._mark_communication_success()
                         return data
                     else:
                         # Response received but wrong serial number - stale data, try again
@@ -555,22 +626,20 @@ class TcpClient:
                         attempt + 1,
                         MAX_RETRY_ATTEMPTS,
                     )
-                    # Only mark unavailable on final attempt
+                    # Only mark failure on final attempt
                     if attempt == MAX_RETRY_ATTEMPTS - 1:
-                        self._available = False
-                        self._last_error = "Response timeout"
+                        self._mark_communication_failure("Response timeout")
                         return {}
                     continue
 
             # All retry attempts exhausted
-            _LOGGER.warning("No valid response received from %s after %d attempts", self._ip, MAX_RETRY_ATTEMPTS)
-            self._available = False
+            _LOGGER.debug("No valid response received from %s after %d attempts", self._ip, MAX_RETRY_ATTEMPTS)
+            self._mark_communication_failure("No valid response")
             return {}
 
         except Exception as e:
             _LOGGER.warning("_send_receiver error for %s: %s", self._ip, e)
-            self._available = False
-            self._last_error = str(e)
+            self._mark_communication_failure(str(e))
             await self._close_connection()
             return {}
 
@@ -589,12 +658,13 @@ class TcpClient:
             _LOGGER.debug("Sending only command %d to %s", cmd, self._ip)
             self._writer.write(self._get_package(cmd, payload))
             await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
+            self._last_activity = time.monotonic()
         except TimeoutError:
-            _LOGGER.error("Send timeout to %s", self._ip)
-            self._available = False
+            _LOGGER.debug("Send timeout to %s", self._ip)
+            self._mark_communication_failure("Send timeout")
         except Exception as e:
-            _LOGGER.error("Send failed to %s: %s", self._ip, e)
-            self._available = False
+            _LOGGER.debug("Send failed to %s: %s", self._ip, e)
+            self._mark_communication_failure(str(e))
 
     async def control(self, payload: dict[str, Any]) -> bool:
         """Send control command and wait for confirmation.
@@ -610,7 +680,6 @@ class TcpClient:
             if not self.is_connected():
                 _LOGGER.debug("Connection lost to %s, reconnecting for control...", self._ip)
                 if not await self._connect_internal():
-                    self._available = False
                     return False
 
             try:
@@ -629,8 +698,7 @@ class TcpClient:
 
                         # Check if response contains our serial number (acknowledgment)
                         if self._sn in res_str:
-                            self._available = True
-                            self._last_error = None
+                            self._mark_communication_success()
                             return True
                         else:
                             # Response received but wrong serial number - may be stale data
@@ -638,13 +706,11 @@ class TcpClient:
                             _LOGGER.debug(
                                 "Response from %s with different SN, assuming success", self._ip
                             )
-                            self._available = True
-                            self._last_error = None
+                            self._mark_communication_success()
                             return True
                     else:
-                        _LOGGER.warning("Empty control response from %s", self._ip)
-                        self._available = False
-                        self._last_error = "Empty response"
+                        _LOGGER.debug("Empty control response from %s", self._ip)
+                        self._mark_communication_failure("Empty response")
                         await self._close_connection()
                         return False
                 except TimeoutError:
@@ -652,14 +718,13 @@ class TcpClient:
                     _LOGGER.debug(
                         "No acknowledgment from %s, but command may have succeeded", self._ip
                     )
-                    self._available = True
-                    self._last_error = None
+                    # Don't mark as failure - command likely worked
+                    self._last_activity = time.monotonic()
                     return True
 
             except Exception as e:
                 _LOGGER.warning("Control command failed for %s: %s", self._ip, e)
-                self._available = False
-                self._last_error = str(e)
+                self._mark_communication_failure(str(e))
                 await self._close_connection()
                 return False
 
