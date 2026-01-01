@@ -13,6 +13,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     DOMAIN,
     SWITCH_TYPE_CODE,
+    SOCKET_TYPE_CODE,
+    SWITCH_LIKE_TYPES,
     DPID_SWITCH,
     DEFAULT_SCAN_INTERVAL,
 )
@@ -40,18 +42,18 @@ async def async_setup_entry(
     SCAN_INTERVAL = timedelta(seconds=scan_interval)
     _LOGGER.debug("Switch platform using scan interval: %s seconds", scan_interval)
 
+    # Include both switches (00) and sockets/plugs (02) as switch entities
     switches = [
         CozyLifeSwitch(client)
         for client in entry_data["tcp_client"]
-        if client.device_type_code == SWITCH_TYPE_CODE
+        if client.device_type_code in SWITCH_LIKE_TYPES
     ]
     async_add_entities(switches, update_before_add=True)
 
 
 class CozyLifeSwitch(CozyLifeEntity, SwitchEntity):
-    """Representation of a CozyLife switch."""
+    """Representation of a CozyLife switch or socket/plug."""
 
-    _attr_device_class = SwitchDeviceClass.SWITCH
     _attr_assumed_state = False  # We query actual device state, not assumed
 
     def __init__(self, tcp_client: TcpClient) -> None:
@@ -61,10 +63,19 @@ class CozyLifeSwitch(CozyLifeEntity, SwitchEntity):
             tcp_client: The TCP client for device communication.
         """
         super().__init__(tcp_client)
-        _LOGGER.debug("Initializing CozyLifeSwitch for device %s", tcp_client.device_id)
+        _LOGGER.debug("Initializing CozyLifeSwitch for device %s (type: %s)",
+                     tcp_client.device_id, tcp_client.device_type_code)
+
+        # Set device class based on device type
+        if tcp_client.device_type_code == SOCKET_TYPE_CODE:
+            self._attr_device_class = SwitchDeviceClass.OUTLET
+        else:
+            self._attr_device_class = SwitchDeviceClass.SWITCH
 
     def _get_default_model(self) -> str:
-        """Return the default model name for switches."""
+        """Return the default model name for switches/sockets."""
+        if self._tcp_client.device_type_code == SOCKET_TYPE_CODE:
+            return "Socket"
         return "Switch"
 
     async def async_added_to_hass(self) -> None:

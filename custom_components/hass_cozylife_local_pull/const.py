@@ -9,7 +9,11 @@ UDP_DISCOVERY_PORT = 6095
 # Device type codes (http://doc.doit/project-5/doc-8/)
 SWITCH_TYPE_CODE = "00"
 LIGHT_TYPE_CODE = "01"
-SUPPORT_DEVICE_CATEGORY = [SWITCH_TYPE_CODE, LIGHT_TYPE_CODE]
+SOCKET_TYPE_CODE = "02"  # Smart plug/socket - works like a switch
+# All supported device types
+SUPPORT_DEVICE_CATEGORY = [SWITCH_TYPE_CODE, LIGHT_TYPE_CODE, SOCKET_TYPE_CODE]
+# Device types that behave like switches (on/off only)
+SWITCH_LIKE_TYPES = [SWITCH_TYPE_CODE, SOCKET_TYPE_CODE]
 
 # Data point IDs (http://doc.doit/project-5/doc-8/)
 DPID_SWITCH = "1"
