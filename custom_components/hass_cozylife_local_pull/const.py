@@ -46,10 +46,10 @@ API_DOMAIN = "api-us.doiting.com"
 
 # Connection timeout defaults (in seconds)
 # These can be overridden via config/options flow
-# Increased response timeout from 2s to 3s to reduce connection drops on slow devices
-DEFAULT_CONNECTION_TIMEOUT = 5
-DEFAULT_COMMAND_TIMEOUT = 3
-DEFAULT_RESPONSE_TIMEOUT = 3
+# Increased timeouts for better reliability with slow devices
+DEFAULT_CONNECTION_TIMEOUT = 10  # Increased from 5s - some devices are slow to respond
+DEFAULT_COMMAND_TIMEOUT = 5  # Increased from 3s
+DEFAULT_RESPONSE_TIMEOUT = 5  # Increased from 3s
 
 # Config keys for timeouts
 CONF_CONNECTION_TIMEOUT = "connection_timeout"
@@ -62,10 +62,10 @@ COMMAND_TIMEOUT = DEFAULT_COMMAND_TIMEOUT
 RESPONSE_TIMEOUT = DEFAULT_RESPONSE_TIMEOUT
 
 # Retry configuration
-MAX_RETRY_ATTEMPTS = 3
-INITIAL_RETRY_DELAY = 1.0  # seconds
-MAX_RETRY_DELAY = 30.0  # seconds
-RETRY_BACKOFF_FACTOR = 2.0
+MAX_RETRY_ATTEMPTS = 5  # Increased from 3 - more retries for reading responses
+INITIAL_RETRY_DELAY = 0.5  # Reduced from 1.0 - faster initial retry
+MAX_RETRY_DELAY = 15.0  # Reduced from 30.0 - don't wait too long
+RETRY_BACKOFF_FACTOR = 1.5  # Reduced from 2.0 - gentler backoff
 
 # Periodic reconnection interval (in seconds)
 RECONNECT_INTERVAL = 60  # How often to try reconnecting unavailable devices

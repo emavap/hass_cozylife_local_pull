@@ -13,13 +13,15 @@ from .utils import get_sn
 _LOGGER = logging.getLogger(__name__)
 
 # Discovery configuration
+# Increased timeouts and attempts for better device discovery
+# Some devices respond slowly, especially on congested networks
 BROADCAST_ADDRESS = "255.255.255.255"
-BROADCAST_ATTEMPTS = 5
-BROADCAST_DELAY = 0.1  # seconds between broadcasts
-SOCKET_TIMEOUT = 0.5  # seconds
-MAX_FIRST_RESPONSE_TRIES = 10
-MAX_RECEIVE_ATTEMPTS = 100
-MAX_CONSECUTIVE_TIMEOUTS = 3
+BROADCAST_ATTEMPTS = 8  # Increased from 5 - more chances for devices to hear us
+BROADCAST_DELAY = 0.2  # Increased from 0.1 - give devices more time to process
+SOCKET_TIMEOUT = 1.0  # Increased from 0.5 - longer wait for slow devices
+MAX_FIRST_RESPONSE_TRIES = 15  # Increased from 10 - wait longer for first response
+MAX_RECEIVE_ATTEMPTS = 150  # Increased from 100 - collect more responses
+MAX_CONSECUTIVE_TIMEOUTS = 5  # Increased from 3 - be more patient
 
 
 @contextlib.contextmanager
@@ -95,6 +97,9 @@ def _discover_devices(sock: socket.socket) -> list[str]:
             time.sleep(BROADCAST_DELAY)
         except Exception as e:
             _LOGGER.warning("Failed to send UDP broadcast %d: %s", i + 1, e)
+
+    # Give devices a moment to prepare responses after last broadcast
+    time.sleep(0.5)
 
     # Wait for first response
     if not _wait_for_first_response(sock):

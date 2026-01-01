@@ -6,12 +6,14 @@
         "description": "Configure the CozyLife Local integration. Devices are automatically discovered via UDP broadcast and hostname scanning.",
         "data": {
           "ips": "Manual IP addresses (comma separated, optional)",
+          "scan_interval": "Polling interval (seconds)",
           "connection_timeout": "Connection timeout (seconds)",
           "command_timeout": "Command timeout (seconds)",
           "response_timeout": "Response timeout (seconds)"
         },
         "data_description": {
           "ips": "Enter IP addresses of devices that may not be discovered automatically, separated by commas. Leave empty to use automatic discovery only.",
+          "scan_interval": "How often to poll devices for state updates (10-300 seconds)",
           "connection_timeout": "Timeout for establishing device connections (1-30 seconds)",
           "command_timeout": "Timeout for sending commands to devices (1-30 seconds)",
           "response_timeout": "Timeout for waiting for device responses (1-30 seconds)"
@@ -35,7 +37,7 @@
           "add_ip": "Add IP address",
           "remove_ip": "Remove IP address",
           "view_ips": "View configured IPs",
-          "timeouts": "Configure timeouts",
+          "timeouts": "Configure timeouts & polling",
           "done": "Done"
         }
       },
@@ -61,17 +63,19 @@
         "description": "Currently configured IP addresses:\n\n{ip_list}"
       },
       "timeouts": {
-        "title": "Configure Timeouts",
-        "description": "Adjust timeout values for device communication. Increase these if you have slow-responding devices.",
+        "title": "Configure Timeouts & Polling",
+        "description": "Adjust timeout and polling values for device communication. Increase timeouts if you have slow-responding devices. Decrease polling interval for faster state updates (uses more network traffic).",
         "data": {
+          "scan_interval": "Polling interval (seconds)",
           "connection_timeout": "Connection timeout (seconds)",
           "command_timeout": "Command timeout (seconds)",
           "response_timeout": "Response timeout (seconds)"
         },
         "data_description": {
-          "connection_timeout": "Timeout for establishing device connections (1-30 seconds)",
-          "command_timeout": "Timeout for sending commands to devices (1-30 seconds)",
-          "response_timeout": "Timeout for waiting for device responses (1-30 seconds)"
+          "scan_interval": "How often to poll devices for state updates (10-300 seconds, default: 30)",
+          "connection_timeout": "Timeout for establishing device connections (1-30 seconds, default: 10)",
+          "command_timeout": "Timeout for sending commands to devices (1-30 seconds, default: 5)",
+          "response_timeout": "Timeout for waiting for device responses (1-30 seconds, default: 5)"
         }
       }
     },

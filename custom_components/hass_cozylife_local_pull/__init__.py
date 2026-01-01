@@ -121,16 +121,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for ip in ip_list
     ]
 
-    # Connect to devices to get info
+    # Connect to devices to get info with retries for initial setup
+    # Some devices may need multiple attempts during startup
     if clients:
+        _LOGGER.info("Connecting to %d discovered device(s)...", len(clients))
         connect_tasks = [client.connect() for client in clients]
         await asyncio.gather(*connect_tasks, return_exceptions=True)
 
-    # Filter clients that have valid device info and supported device types
-    valid_clients: list[TcpClient] = [
-        c for c in clients
-        if c.device_type_code and c.device_type_code in SUPPORT_DEVICE_CATEGORY
-    ]
+        # Give devices that failed a second chance after a brief delay
+        failed_clients = [c for c in clients if not c.device_id]
+        if failed_clients:
+            _LOGGER.info(
+                "Retrying %d device(s) that didn't respond on first attempt...",
+                len(failed_clients)
+            )
+            await asyncio.sleep(2)  # Brief delay before retry
+            retry_tasks = [c.connect(force=True) for c in failed_clients]
+            await asyncio.gather(*retry_tasks, return_exceptions=True)
+
+    # Filter clients that connected successfully
+    # Include devices with known supported types, OR devices that connected but type is unknown
+    # (we'll try to use them as switches/lights based on their capabilities)
+    valid_clients: list[TcpClient] = []
+    for c in clients:
+        if c.device_type_code and c.device_type_code in SUPPORT_DEVICE_CATEGORY:
+            # Known supported device type
+            valid_clients.append(c)
+        elif c.device_id and not c.device_type_code:
+            # Device connected (has device_id) but type unknown - default to switch
+            _LOGGER.info(
+                "Device at %s connected but type unknown (ID=%s), will try as switch",
+                c._ip,
+                c.device_id,
+            )
+            c._info.device_type_code = "00"  # Default to switch
+            valid_clients.append(c)
+        elif c.available and c.device_id:
+            # Device is available and has ID - include it
+            valid_clients.append(c)
 
     # Log any unsupported devices for debugging
     unsupported = [c for c in clients if c.device_type_code and c.device_type_code not in SUPPORT_DEVICE_CATEGORY]
@@ -138,10 +166,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.warning(
             "Skipping unsupported device type '%s' at IP %s",
             c.device_type_code,
-            c._ip
+            c._ip,
         )
 
-    _LOGGER.debug(
+    # Log devices that failed to connect
+    failed = [c for c in clients if not c.device_id and not c.available]
+    for c in failed:
+        _LOGGER.warning(
+            "Failed to connect to device at %s (last error: %s)",
+            c._ip,
+            c.last_error or "unknown",
+        )
+
+    _LOGGER.info(
         "Found %d valid devices out of %d candidates", len(valid_clients), len(clients)
     )
 
@@ -153,18 +190,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         for client in clients_to_check:
             try:
-                # If device is marked unavailable, try to reconnect
+                # If device is marked unavailable, force reconnection (bypass backoff)
                 if not client.available:
                     _LOGGER.debug(
-                        "Health check: attempting reconnection for %s", client._ip
+                        "Health check: forcing reconnection for unavailable device %s",
+                        client._ip,
                     )
-                    await client.connect()
-                # If connection is stale (connected but not available), try to refresh
+                    # Use force=True to bypass exponential backoff timer
+                    # This ensures we actually try to connect, not just skip due to backoff
+                    await client.connect(force=True)
+                # If connection is stale (socket closed but still marked available), reconnect
                 elif not client.is_connected() and client.available:
                     _LOGGER.debug(
                         "Health check: connection stale for %s, reconnecting", client._ip
                     )
-                    await client.connect()
+                    await client.connect(force=True)
             except Exception as e:
                 _LOGGER.debug("Health check error for %s: %s", client._ip, e)
 

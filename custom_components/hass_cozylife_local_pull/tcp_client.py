@@ -127,43 +127,77 @@ class TcpClient:
             )
             return False
 
-        try:
-            # Close existing connection if any
-            if self._writer:
-                await self._close_connection()
+        # Try to connect with a few quick retries for transient failures
+        max_quick_retries = 3
+        for attempt in range(max_quick_retries):
+            try:
+                # Close existing connection if any
+                if self._writer:
+                    await self._close_connection()
 
-            self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._ip, TCP_PORT),
-                timeout=self._connection_timeout,
-            )
+                _LOGGER.debug(
+                    "Connecting to %s (attempt %d/%d)...",
+                    self._ip, attempt + 1, max_quick_retries
+                )
 
-            # Enable TCP keep-alive to detect dead connections
-            self._configure_socket_keepalive()
+                self._reader, self._writer = await asyncio.wait_for(
+                    asyncio.open_connection(self._ip, TCP_PORT),
+                    timeout=self._connection_timeout,
+                )
 
-            # Get device info with timeout
-            await asyncio.wait_for(self._device_info(), timeout=self._connection_timeout)
+                # Enable TCP keep-alive to detect dead connections
+                self._configure_socket_keepalive()
 
-            # If dpid is still empty, try to query to get attributes
-            if not self._info.dpid:
-                _LOGGER.info("DPID empty for %s, querying device for attributes", self._ip)
-                await self._query_internal()
+                # Get device info with timeout
+                await asyncio.wait_for(self._device_info(), timeout=self._connection_timeout)
 
-            self._available = True
-            self._last_error = None
-            self._retry_count = 0  # Reset on successful connection
-            self._next_retry_time = 0.0
-            self._consecutive_failures = 0  # Reset failure counter
-            self._last_successful_communication = time.monotonic()
-            self._last_activity = time.monotonic()
-            _LOGGER.info("Successfully connected to %s", self._ip)
-            return True
+                # If dpid is still empty, try to query to get attributes
+                if not self._info.dpid:
+                    _LOGGER.info("DPID empty for %s, querying device for attributes", self._ip)
+                    await self._query_internal()
 
-        except TimeoutError:
-            self._handle_connection_failure("Connection timeout")
-            return False
-        except Exception as e:
-            self._handle_connection_failure(str(e))
-            return False
+                self._available = True
+                self._last_error = None
+                self._retry_count = 0  # Reset on successful connection
+                self._next_retry_time = 0.0
+                self._consecutive_failures = 0  # Reset failure counter
+                self._last_successful_communication = time.monotonic()
+                self._last_activity = time.monotonic()
+                _LOGGER.info("Successfully connected to %s (device_id=%s, type=%s)",
+                           self._ip, self._info.device_id, self._info.device_type_code)
+                return True
+
+            except TimeoutError:
+                _LOGGER.debug("Connection timeout to %s (attempt %d/%d)",
+                            self._ip, attempt + 1, max_quick_retries)
+                if attempt < max_quick_retries - 1:
+                    await asyncio.sleep(0.5)  # Brief delay before retry
+                    continue
+                self._handle_connection_failure("Connection timeout")
+                return False
+            except ConnectionRefusedError:
+                _LOGGER.debug("Connection refused by %s (attempt %d/%d)",
+                            self._ip, attempt + 1, max_quick_retries)
+                if attempt < max_quick_retries - 1:
+                    await asyncio.sleep(0.5)
+                    continue
+                self._handle_connection_failure("Connection refused")
+                return False
+            except OSError as e:
+                # Network unreachable, host unreachable, etc.
+                _LOGGER.debug("Network error connecting to %s: %s (attempt %d/%d)",
+                            self._ip, e, attempt + 1, max_quick_retries)
+                if attempt < max_quick_retries - 1:
+                    await asyncio.sleep(0.5)
+                    continue
+                self._handle_connection_failure(f"Network error: {e}")
+                return False
+            except Exception as e:
+                _LOGGER.debug("Unexpected error connecting to %s: %s", self._ip, e)
+                self._handle_connection_failure(str(e))
+                return False
+
+        return False
 
     def _handle_connection_failure(self, error: str) -> None:
         """Handle connection failure with exponential backoff.
@@ -282,12 +316,14 @@ class TcpClient:
     def _mark_communication_success(self) -> None:
         """Mark that communication was successful.
 
-        This resets failure counters and updates timing information.
+        This resets failure counters, retry state, and updates timing information.
         Should be called after any successful device communication.
         """
         self._available = True
         self._last_error = None
         self._consecutive_failures = 0
+        self._retry_count = 0  # Reset retry count on success
+        self._next_retry_time = 0.0  # Clear backoff timer on success
         self._last_successful_communication = time.monotonic()
         self._last_activity = time.monotonic()
 
@@ -429,12 +465,28 @@ class TcpClient:
             resp = await asyncio.wait_for(
                 self._reader.read(1024), timeout=self._command_timeout
             )
-            resp_json = json.loads(resp.strip())
+            resp_str = resp.decode("utf-8", errors="ignore")
+            _LOGGER.debug("Device info raw response from %s: %s", self._ip, resp_str.replace("\n", "\\n").replace("\r", "\\r"))
+
+            # Handle newline-delimited JSON - take first valid JSON line
+            resp_json = None
+            for line in resp_str.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    resp_json = json.loads(line)
+                    if isinstance(resp_json, dict) and resp_json.get("msg"):
+                        break
+                except json.JSONDecodeError:
+                    continue
+
+            if not resp_json:
+                _LOGGER.debug("_device_info: No valid JSON response from %s", self._ip)
+                return
+
         except TimeoutError:
             _LOGGER.warning("_device_info timeout for %s", self._ip)
-            return
-        except json.JSONDecodeError as e:
-            _LOGGER.debug("_device_info JSON decode error for %s: %s", self._ip, e)
             return
         except Exception as e:
             _LOGGER.debug("_device_info.recv.error for %s: %s", self._ip, e)
@@ -453,26 +505,46 @@ class TcpClient:
         self._info.device_name = msg.get("name", "")
         _LOGGER.debug("Device response for %s: %s", self._ip, msg)
 
+        # Try to get device type from 'dtp' field directly (some devices provide it)
+        if msg.get("dtp"):
+            self._info.device_type_code = msg["dtp"]
+            _LOGGER.debug("Got device type code from dtp field: %s", self._info.device_type_code)
+
         if msg.get("pid") is None:
-            _LOGGER.debug("_device_info: Missing PID for %s", self._ip)
-            return
+            _LOGGER.debug("_device_info: Missing PID for %s, using dtp if available", self._ip)
+            # Don't return - we might still have dtp
+        else:
+            self._info.pid = msg["pid"]
 
-        self._info.pid = msg["pid"]
-        pid_list = await async_get_pid_list(self._hass)
+            # Try to look up device info from PID list
+            pid_list = await async_get_pid_list(self._hass)
 
-        for item in pid_list:
-            match = False
-            for model in item.get("m", []):
-                if model.get("pid") == self._info.pid:
-                    match = True
-                    self._info.icon = model.get("i", "")
-                    self._info.device_model_name = model.get("n", "")
-                    self._info.dpid = [str(x) for x in model.get("dpid", [])]
+            for item in pid_list:
+                match = False
+                for model in item.get("m", []):
+                    if model.get("pid") == self._info.pid:
+                        match = True
+                        self._info.icon = model.get("i", "")
+                        self._info.device_model_name = model.get("n", "")
+                        self._info.dpid = [str(x) for x in model.get("dpid", [])]
+                        break
+
+                if match:
+                    # Only override device_type_code if not already set from dtp
+                    if not self._info.device_type_code:
+                        self._info.device_type_code = item.get("c", "")
                     break
 
-            if match:
-                self._info.device_type_code = item.get("c", "")
-                break
+        # If we still don't have device_type_code, try to infer from dpid
+        if not self._info.device_type_code and self._info.dpid:
+            # Lights typically have brightness (4), temp (3), hue (5), sat (6)
+            # Switches typically only have switch (1)
+            if any(d in self._info.dpid for d in ["3", "4", "5", "6"]):
+                self._info.device_type_code = "01"  # Light
+                _LOGGER.info("Inferred device type 'light' from dpid for %s", self._ip)
+            else:
+                self._info.device_type_code = "00"  # Switch
+                _LOGGER.info("Inferred device type 'switch' from dpid for %s", self._ip)
 
         _LOGGER.debug(
             "Device Info for %s: ID=%s, Name=%s, Type=%s, PID=%s, Model=%s",
@@ -543,6 +615,47 @@ class TcpClient:
         async with self._lock:
             return await self._send_receiver_internal(cmd, payload)
 
+    def _parse_json_lines(self, data: str, target_sn: str) -> dict[str, Any] | None:
+        """Parse newline-delimited JSON and find the response matching our SN.
+
+        CozyLife devices send responses as newline-delimited JSON. A single read
+        may contain multiple JSON objects or partial data. This method properly
+        handles splitting on newlines and finding the matching response.
+
+        Args:
+            data: Raw string data that may contain multiple JSON objects.
+            target_sn: The serial number we're looking for.
+
+        Returns:
+            The parsed JSON object matching our SN, or None if not found.
+        """
+        # Split on common line delimiters (device uses \r\n but handle both)
+        lines = data.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Quick check if our SN is in this line before parsing
+            if target_sn not in line:
+                continue
+
+            try:
+                parsed = json.loads(line)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                # This line is not valid JSON, skip it
+                _LOGGER.debug(
+                    "Skipping invalid JSON line from %s (length: %d)",
+                    self._ip,
+                    len(line),
+                )
+                continue
+
+        return None
+
     async def _send_receiver_internal(
         self, cmd: int, payload: dict[str, Any]
     ) -> dict[str, Any]:
@@ -563,10 +676,27 @@ class TcpClient:
             if not await self._connect_internal():
                 return {}
 
+        # Try to send, reconnecting once if it fails
         try:
             _LOGGER.debug("Sending command %d to %s with payload %s", cmd, self._ip, payload)
             self._writer.write(self._get_package(cmd, payload))
             await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
+        except Exception as send_error:
+            _LOGGER.debug("Send failed to %s: %s, reconnecting and retrying...", self._ip, send_error)
+            await self._close_connection()
+            if not await self._connect_internal():
+                return {}
+            # Retry send after reconnect
+            try:
+                self._writer.write(self._get_package(cmd, payload))
+                await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
+            except Exception as retry_error:
+                _LOGGER.warning("Send retry failed to %s: %s", self._ip, retry_error)
+                self._mark_communication_failure(str(retry_error))
+                await self._close_connection()
+                return {}
+
+        try:
 
             # Wait for response with retry logic for timeouts
             for attempt in range(MAX_RETRY_ATTEMPTS):
@@ -581,19 +711,22 @@ class TcpClient:
                         return {}
 
                     res_str = res.decode("utf-8", errors="ignore")
-                    _LOGGER.debug("Received from %s: %s", self._ip, res_str)
+                    _LOGGER.debug("Received from %s: %s", self._ip, res_str.replace(chr(10), '\\n').replace(chr(13), '\\r'))
+
+                    # Add to buffer for handling partial responses
+                    self._read_buffer += res_str
 
                     # Check if response contains our serial number
-                    if self._sn in res_str:
-                        try:
-                            response_payload = json.loads(res_str.strip())
-                        except json.JSONDecodeError:
-                            _LOGGER.debug("JSON decode error from %s", self._ip)
-                            # Try again - might be partial data
-                            continue
+                    if self._sn in self._read_buffer:
+                        # Parse newline-delimited JSON to find our response
+                        response_payload = self._parse_json_lines(self._read_buffer, self._sn)
+
+                        # Clear buffer after successful parse
+                        self._read_buffer = ""
 
                         if not response_payload:
-                            return {}
+                            _LOGGER.debug("No valid JSON with our SN found from %s", self._ip)
+                            continue
 
                         msg = response_payload.get("msg")
                         if msg is None or not isinstance(msg, dict):
@@ -617,6 +750,7 @@ class TcpClient:
                         _LOGGER.debug(
                             "Response from %s with different SN, reading again", self._ip
                         )
+                        # Keep buffer for next read in case of fragmented response
                         continue
 
                 except TimeoutError:
@@ -626,6 +760,8 @@ class TcpClient:
                         attempt + 1,
                         MAX_RETRY_ATTEMPTS,
                     )
+                    # Clear buffer on timeout
+                    self._read_buffer = ""
                     # Only mark failure on final attempt
                     if attempt == MAX_RETRY_ATTEMPTS - 1:
                         self._mark_communication_failure("Response timeout")
@@ -633,12 +769,14 @@ class TcpClient:
                     continue
 
             # All retry attempts exhausted
+            self._read_buffer = ""  # Clear buffer
             _LOGGER.debug("No valid response received from %s after %d attempts", self._ip, MAX_RETRY_ATTEMPTS)
             self._mark_communication_failure("No valid response")
             return {}
 
         except Exception as e:
             _LOGGER.warning("_send_receiver error for %s: %s", self._ip, e)
+            self._read_buffer = ""  # Clear buffer on error
             self._mark_communication_failure(str(e))
             await self._close_connection()
             return {}
@@ -682,46 +820,68 @@ class TcpClient:
                 if not await self._connect_internal():
                     return False
 
+            # Try to send, reconnecting once if it fails
             try:
                 _LOGGER.debug("Sending control command to %s with payload %s", self._ip, payload)
                 self._writer.write(self._get_package(CMD_SET, payload))
                 await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
-
-                # Wait for acknowledgment with shorter timeout
+            except Exception as send_error:
+                _LOGGER.debug("Control send failed to %s: %s, reconnecting and retrying...", self._ip, send_error)
+                await self._close_connection()
+                if not await self._connect_internal():
+                    return False
+                # Retry send after reconnect
                 try:
-                    res = await asyncio.wait_for(
-                        self._reader.read(1024), timeout=self._response_timeout
-                    )
-                    if res:
-                        res_str = res.decode("utf-8", errors="ignore")
-                        _LOGGER.debug("Control response from %s: %s", self._ip, res_str)
+                    self._writer.write(self._get_package(CMD_SET, payload))
+                    await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
+                except Exception as retry_error:
+                    _LOGGER.warning("Control retry failed to %s: %s", self._ip, retry_error)
+                    self._mark_communication_failure(str(retry_error))
+                    await self._close_connection()
+                    return False
 
-                        # Check if response contains our serial number (acknowledgment)
-                        if self._sn in res_str:
-                            self._mark_communication_success()
-                            return True
-                        else:
-                            # Response received but wrong serial number - may be stale data
-                            # Consider command successful since device responded
-                            _LOGGER.debug(
-                                "Response from %s with different SN, assuming success", self._ip
-                            )
-                            self._mark_communication_success()
-                            return True
-                    else:
-                        _LOGGER.debug("Empty control response from %s", self._ip)
-                        self._mark_communication_failure("Empty response")
-                        await self._close_connection()
-                        return False
-                except TimeoutError:
-                    # Some devices may not send acknowledgment, but command might still work
+            # Wait for acknowledgment
+            try:
+                res = await asyncio.wait_for(
+                    self._reader.read(1024), timeout=self._response_timeout
+                )
+                if res:
+                    res_str = res.decode("utf-8", errors="ignore")
                     _LOGGER.debug(
-                        "No acknowledgment from %s, but command may have succeeded", self._ip
+                        "Control response from %s: %s",
+                        self._ip,
+                        res_str.replace(chr(10), '\\n').replace(chr(13), '\\r')
                     )
-                    # Don't mark as failure - command likely worked
-                    self._last_activity = time.monotonic()
-                    return True
 
+                    # Parse newline-delimited JSON to find our response
+                    # Device may send multiple JSON objects in one response
+                    response_payload = self._parse_json_lines(res_str, self._sn)
+
+                    if response_payload:
+                        # Found our response
+                        self._mark_communication_success()
+                        return True
+                    else:
+                        # Response received but our SN not found - may be stale data
+                        # Consider command successful since device responded
+                        _LOGGER.debug(
+                            "Response from %s with different SN, assuming success", self._ip
+                        )
+                        self._mark_communication_success()
+                        return True
+                else:
+                    _LOGGER.debug("Empty control response from %s", self._ip)
+                    self._mark_communication_failure("Empty response")
+                    await self._close_connection()
+                    return False
+            except TimeoutError:
+                # Some devices may not send acknowledgment, but command might still work
+                _LOGGER.debug(
+                    "No acknowledgment from %s, but command may have succeeded", self._ip
+                )
+                # Don't mark as failure - command likely worked
+                self._last_activity = time.monotonic()
+                return True
             except Exception as e:
                 _LOGGER.warning("Control command failed for %s: %s", self._ip, e)
                 self._mark_communication_failure(str(e))
