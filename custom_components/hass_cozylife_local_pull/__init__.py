@@ -175,7 +175,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.warning(
             "Failed to connect to device at %s (last error: %s)",
             c._ip,
-            c.last_error or "unknown",
+            getattr(c, '_last_error', None) or "unknown",
         )
 
     _LOGGER.info(
