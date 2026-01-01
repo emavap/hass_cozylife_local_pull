@@ -451,6 +451,15 @@ class TcpClient:
         """
         return self._info
 
+    @property
+    def last_error(self) -> str | None:
+        """Return the last error message.
+
+        Returns:
+            The last error message, or None if no error.
+        """
+        return self._last_error
+
     async def _device_info(self) -> None:
         """Get info for device model with timeout."""
         _LOGGER.debug("Getting device info for %s", self._ip)
