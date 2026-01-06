@@ -85,5 +85,15 @@ MIN_SCAN_INTERVAL = 10  # Minimum allowed polling interval
 MAX_SCAN_INTERVAL = 300  # Maximum allowed polling interval
 CONF_SCAN_INTERVAL = "scan_interval"
 
+# Re-discovery configuration
+# Periodic re-discovery helps detect devices that changed IP address
+REDISCOVERY_INTERVAL = 300  # Re-scan network every 5 minutes
+REDISCOVERY_ON_FAILURE_THRESHOLD = 5  # Trigger re-discovery after this many consecutive failures
+
+# Application-level heartbeat configuration
+# Heartbeat keeps connections alive and detects dead connections faster than TCP keep-alive
+HEARTBEAT_INTERVAL = 60  # Send heartbeat query every 60 seconds
+HEARTBEAT_TIMEOUT = 5  # Timeout for heartbeat response
+
 # Cache keys for hass.data
 CACHE_PID_LIST = "pid_list"

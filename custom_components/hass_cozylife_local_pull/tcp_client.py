@@ -20,6 +20,9 @@ from .const import (
     MAX_RETRY_DELAY,
     RETRY_BACKOFF_FACTOR,
     MAX_CONSECUTIVE_FAILURES,
+    HEARTBEAT_INTERVAL,
+    HEARTBEAT_TIMEOUT,
+    REDISCOVERY_ON_FAILURE_THRESHOLD,
 )
 from .utils import async_get_pid_list, get_sn
 
@@ -365,6 +368,21 @@ class TcpClient:
             Number of consecutive failures.
         """
         return self._consecutive_failures
+
+    @property
+    def needs_rediscovery(self) -> bool:
+        """Check if this device has failed enough times to warrant re-discovery.
+
+        When a device has many consecutive failures, it may have changed IP address.
+        This property indicates that a network re-scan might help find the device.
+
+        Returns:
+            True if re-discovery should be attempted.
+        """
+        return (
+            not self._available
+            and self._consecutive_failures >= REDISCOVERY_ON_FAILURE_THRESHOLD
+        )
 
     @property
     def available(self) -> bool:
@@ -914,6 +932,60 @@ class TcpClient:
             The device state dictionary, or empty dict on failure.
         """
         return await self._send_receiver_internal(CMD_QUERY, {})
+
+    async def heartbeat(self) -> bool:
+        """Send a heartbeat to keep connection alive and verify device responsiveness.
+
+        This uses a query command as the heartbeat since CozyLife devices
+        don't have a dedicated ping command. The query is lightweight and
+        also updates our cached state.
+
+        Returns:
+            True if heartbeat succeeded, False if device is unresponsive.
+        """
+        # Check if heartbeat is needed based on last activity
+        time_since_activity = time.monotonic() - self._last_activity
+        if time_since_activity < HEARTBEAT_INTERVAL:
+            # Recent activity, no heartbeat needed
+            _LOGGER.debug(
+                "Skipping heartbeat for %s, last activity %.1fs ago",
+                self._ip,
+                time_since_activity,
+            )
+            return True
+
+        _LOGGER.debug("Sending heartbeat to %s", self._ip)
+
+        try:
+            # Use a shorter timeout for heartbeat to detect issues quickly
+            original_response_timeout = self._response_timeout
+            self._response_timeout = min(self._response_timeout, HEARTBEAT_TIMEOUT)
+
+            try:
+                result = await self.query()
+                if result:
+                    _LOGGER.debug("Heartbeat successful for %s", self._ip)
+                    return True
+                else:
+                    _LOGGER.debug("Heartbeat failed for %s: empty response", self._ip)
+                    return False
+            finally:
+                self._response_timeout = original_response_timeout
+
+        except Exception as e:
+            _LOGGER.debug("Heartbeat exception for %s: %s", self._ip, e)
+            return False
+
+    def needs_heartbeat(self) -> bool:
+        """Check if this device needs a heartbeat.
+
+        Returns:
+            True if heartbeat should be sent (connection idle too long).
+        """
+        if not self.is_connected():
+            return False
+        time_since_activity = time.monotonic() - self._last_activity
+        return time_since_activity >= HEARTBEAT_INTERVAL
 
 
 # Backward compatibility alias

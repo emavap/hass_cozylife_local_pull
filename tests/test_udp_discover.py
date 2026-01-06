@@ -77,7 +77,9 @@ class TestUDPDiscovery:
                 (b'{"msg":{}}', ('192.168.1.100', 6095)),  # First device
                 socket.timeout(),  # First timeout
                 socket.timeout(),  # Second timeout
-                socket.timeout(),  # Third timeout - should stop here
+                socket.timeout(),  # Third timeout
+                socket.timeout(),  # Fourth timeout
+                socket.timeout(),  # Fifth timeout - should stop here (MAX_CONSECUTIVE_TIMEOUTS=5)
                 (b'{"msg":{}}', ('192.168.1.101', 6095)),  # This shouldn't be reached
             ]
         )
@@ -96,8 +98,8 @@ class TestUDPDiscovery:
              patch('custom_components.hass_cozylife_local_pull.udp_discover.get_sn', return_value='123456'):
             get_ip()
 
-        # Should send 5 broadcast messages
-        assert mock_udp_socket.sendto.call_count == 5
+        # Should send 8 broadcast messages (BROADCAST_ATTEMPTS=8)
+        assert mock_udp_socket.sendto.call_count == 8
         
         # Check broadcast address
         for call in mock_udp_socket.sendto.call_args_list:
@@ -135,6 +137,6 @@ class TestUDPDiscovery:
         with patch('socket.socket', return_value=mock_udp_socket):
             get_ip()
 
-        # Verify timeout was set to 0.5 seconds
-        mock_udp_socket.settimeout.assert_called_with(0.5)
+        # Verify timeout was set to 1.0 seconds (SOCKET_TIMEOUT=1.0)
+        mock_udp_socket.settimeout.assert_called_with(1.0)
 
