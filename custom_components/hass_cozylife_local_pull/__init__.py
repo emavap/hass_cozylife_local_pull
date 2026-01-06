@@ -14,10 +14,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
+from typing import Any
+
+import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.typing import ConfigType
+import homeassistant.helpers.config_validation as cv
 
 from .const import (
     DOMAIN,
@@ -41,6 +45,18 @@ from .utils import async_get_pid_list
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[str] = ["light", "switch"]
 
+# Service names
+SERVICE_FORCE_RECONNECT = "force_reconnect"
+SERVICE_RECONNECT_ALL = "reconnect_all"
+
+# Service schemas
+SERVICE_FORCE_RECONNECT_SCHEMA = vol.Schema(
+    {
+        vol.Optional("device_id"): cv.string,
+        vol.Optional("ip_address"): cv.string,
+    }
+)
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the CozyLife Local component.
@@ -53,6 +69,82 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         True if setup was successful.
     """
     hass.data.setdefault(DOMAIN, {})
+
+    async def handle_force_reconnect(call: ServiceCall) -> None:
+        """Handle force_reconnect service call."""
+        device_id = call.data.get("device_id")
+        ip_address = call.data.get("ip_address")
+
+        if not device_id and not ip_address:
+            _LOGGER.warning("force_reconnect requires either device_id or ip_address")
+            return
+
+        # Find the device across all config entries
+        for entry_data in hass.data[DOMAIN].values():
+            if not isinstance(entry_data, dict):
+                continue
+            coordinator: DeviceCoordinator | None = entry_data.get("coordinator")
+            if not coordinator:
+                continue
+
+            for client in coordinator.devices.values():
+                match = False
+                if device_id and client.device_id == device_id:
+                    match = True
+                elif ip_address and client.ip == ip_address:
+                    match = True
+
+                if match:
+                    _LOGGER.info(
+                        "Force reconnecting device %s at %s",
+                        client.device_id,
+                        client.ip,
+                    )
+                    await client.disconnect()
+                    await asyncio.sleep(1)
+                    if await client.connect(force=True):
+                        _LOGGER.info("Device %s reconnected successfully", client.device_id)
+                    else:
+                        _LOGGER.warning("Device %s failed to reconnect", client.device_id)
+                    return
+
+        _LOGGER.warning("Device not found for force_reconnect: device_id=%s, ip=%s", device_id, ip_address)
+
+    async def handle_reconnect_all(call: ServiceCall) -> None:
+        """Handle reconnect_all service call."""
+        _LOGGER.info("Reconnecting all CozyLife devices...")
+
+        for entry_data in hass.data[DOMAIN].values():
+            if not isinstance(entry_data, dict):
+                continue
+            coordinator: DeviceCoordinator | None = entry_data.get("coordinator")
+            if not coordinator:
+                continue
+
+            for client in coordinator.devices.values():
+                _LOGGER.info("Reconnecting %s at %s", client.device_id, client.ip)
+                await client.disconnect()
+
+            await asyncio.sleep(2)
+
+            for client in coordinator.devices.values():
+                await client.connect(force=True)
+
+        _LOGGER.info("Reconnect all complete")
+
+    # Register services
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_FORCE_RECONNECT,
+        handle_force_reconnect,
+        schema=SERVICE_FORCE_RECONNECT_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RECONNECT_ALL,
+        handle_reconnect_all,
+    )
+
     return True
 
 

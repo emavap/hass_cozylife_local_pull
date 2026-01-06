@@ -1,0 +1,23 @@
+force_reconnect:
+  name: Force Reconnect
+  description: Force a device to reconnect. Useful when a device is stuck in unavailable state.
+  fields:
+    device_id:
+      name: Device ID
+      description: The device ID to reconnect (found in device info or entity attributes)
+      required: false
+      example: "1234567890abcdef"
+      selector:
+        text:
+    ip_address:
+      name: IP Address
+      description: The IP address of the device to reconnect (alternative to device_id)
+      required: false
+      example: "192.168.1.100"
+      selector:
+        text:
+
+reconnect_all:
+  name: Reconnect All Devices
+  description: Force all CozyLife devices to reconnect. Use after network changes or if multiple devices are stuck.
+
