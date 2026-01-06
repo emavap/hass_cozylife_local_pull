@@ -8,9 +8,10 @@ import logging
 import socket
 import time
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 from .const import (
+    DOMAIN,
     TCP_PORT,
     DEFAULT_CONNECTION_TIMEOUT,
     DEFAULT_COMMAND_TIMEOUT,
@@ -23,6 +24,19 @@ from .const import (
     HEARTBEAT_INTERVAL,
     HEARTBEAT_TIMEOUT,
     REDISCOVERY_ON_FAILURE_THRESHOLD,
+    RECEIVE_LOOP_TIMEOUT,
+    RECEIVE_LOOP_RETRY_DELAY,
+    RECONNECT_MIN_INTERVAL,
+    RECONNECT_MAX_INTERVAL,
+    RECONNECT_BACKOFF_FACTOR,
+    DEVICE_OFFLINE_THRESHOLD,
+    DEVICE_STATE_ONLINE,
+    DEVICE_STATE_OFFLINE,
+    DEVICE_STATE_CONNECTING,
+    DEVICE_STATE_UNKNOWN,
+    SIGNAL_DEVICE_STATE,
+    SIGNAL_DEVICE_CONNECTED,
+    SIGNAL_DEVICE_DISCONNECTED,
 )
 from .utils import async_get_pid_list, get_sn
 
@@ -51,7 +65,12 @@ class DeviceInfo:
 
 
 class TcpClient:
-    """Represents a CozyLife device connection with automatic reconnection."""
+    """Represents a CozyLife device connection with automatic reconnection.
+
+    This client maintains a persistent connection with the device and runs a
+    continuous receive loop to listen for push updates. When the connection
+    is lost, it automatically attempts to reconnect with exponential backoff.
+    """
 
     def __init__(
         self,
@@ -96,6 +115,18 @@ class TcpClient:
         self._consecutive_failures: int = 0
         self._last_successful_communication: float = 0.0
         self._last_activity: float = 0.0
+
+        # Persistent connection state
+        self._device_state: str = DEVICE_STATE_UNKNOWN
+        self._receive_loop_task: asyncio.Task | None = None
+        self._reconnect_task: asyncio.Task | None = None
+        self._is_closing: bool = False
+        self._state_callbacks: list[Callable[[str, dict[str, Any]], None]] = []
+        self._last_state: dict[str, Any] = {}  # Cached last known state
+
+        # Reconnection backoff state
+        self._reconnect_delay: float = RECONNECT_MIN_INTERVAL
+        self._last_ip_change_check: float = 0.0
 
     async def connect(self, force: bool = False) -> bool:
         """Establish connection to device with improved error handling.
@@ -986,6 +1017,392 @@ class TcpClient:
             return False
         time_since_activity = time.monotonic() - self._last_activity
         return time_since_activity >= HEARTBEAT_INTERVAL
+
+    # =========================================================================
+    # Persistent Connection and Receive Loop Methods
+    # =========================================================================
+
+    @property
+    def device_state(self) -> str:
+        """Return the current device state.
+
+        Returns:
+            One of DEVICE_STATE_ONLINE, DEVICE_STATE_OFFLINE, DEVICE_STATE_CONNECTING, DEVICE_STATE_UNKNOWN.
+        """
+        return self._device_state
+
+    @property
+    def last_state(self) -> dict[str, Any]:
+        """Return the last known device state.
+
+        Returns:
+            Dictionary of data point values from the last successful query.
+        """
+        return self._last_state.copy()
+
+    @property
+    def ip(self) -> str:
+        """Return the current IP address.
+
+        Returns:
+            The IP address this client is connected to.
+        """
+        return self._ip
+
+    def register_state_callback(
+        self, callback: Callable[[str, dict[str, Any]], None]
+    ) -> Callable[[], None]:
+        """Register a callback for state updates.
+
+        The callback will be called whenever the device state changes or
+        when new data is received from the device.
+
+        Args:
+            callback: Function(device_id, state_dict) to call on updates.
+
+        Returns:
+            A function to unregister the callback.
+        """
+        self._state_callbacks.append(callback)
+
+        def unregister():
+            if callback in self._state_callbacks:
+                self._state_callbacks.remove(callback)
+
+        return unregister
+
+    def _dispatch_state(self, state: dict[str, Any]) -> None:
+        """Dispatch state update to all registered callbacks.
+
+        Args:
+            state: The new state dictionary.
+        """
+        if state:
+            self._last_state.update(state)
+
+        for callback in self._state_callbacks:
+            try:
+                callback(self._info.device_id, self._last_state)
+            except Exception as e:
+                _LOGGER.warning(
+                    "Error in state callback for %s: %s", self._ip, e
+                )
+
+    def _set_device_state(self, new_state: str) -> None:
+        """Set the device state and log the transition.
+
+        Args:
+            new_state: The new device state.
+        """
+        if self._device_state != new_state:
+            old_state = self._device_state
+            self._device_state = new_state
+            _LOGGER.info(
+                "Device %s (%s) state: %s -> %s",
+                self._info.device_id or "unknown",
+                self._ip,
+                old_state,
+                new_state,
+            )
+
+    async def start_persistent_connection(self) -> None:
+        """Start the persistent connection and receive loop.
+
+        This method starts the background tasks that maintain the connection
+        and listen for device updates. Call this after initial connect() to
+        enable push-style updates.
+        """
+        if self._is_closing:
+            _LOGGER.debug("Cannot start persistent connection for %s: closing", self._ip)
+            return
+
+        if self._receive_loop_task is not None and not self._receive_loop_task.done():
+            _LOGGER.debug("Receive loop already running for %s", self._ip)
+            return
+
+        _LOGGER.info("Starting persistent connection for %s", self._ip)
+        self._is_closing = False
+        self._receive_loop_task = asyncio.create_task(self._receive_loop())
+
+    async def stop_persistent_connection(self) -> None:
+        """Stop the persistent connection and all background tasks.
+
+        Call this when unloading the integration or when the device should
+        no longer be monitored.
+        """
+        _LOGGER.info("Stopping persistent connection for %s", self._ip)
+        self._is_closing = True
+
+        # Cancel receive loop
+        if self._receive_loop_task is not None:
+            self._receive_loop_task.cancel()
+            try:
+                await self._receive_loop_task
+            except asyncio.CancelledError:
+                pass
+            self._receive_loop_task = None
+
+        # Cancel reconnect task
+        if self._reconnect_task is not None:
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
+            self._reconnect_task = None
+
+        # Close connection
+        await self.disconnect()
+        self._set_device_state(DEVICE_STATE_OFFLINE)
+
+    async def _receive_loop(self) -> None:
+        """Continuous loop that receives data from the device.
+
+        This loop runs as long as the connection is active and handles:
+        - Receiving push updates from the device
+        - Detecting connection loss
+        - Triggering reconnection when needed
+        """
+        _LOGGER.debug("Receive loop started for %s", self._ip)
+
+        while not self._is_closing:
+            try:
+                # Ensure we're connected
+                if not self.is_connected():
+                    self._set_device_state(DEVICE_STATE_OFFLINE)
+                    await self._handle_disconnection()
+                    if self._is_closing:
+                        break
+                    continue
+
+                self._set_device_state(DEVICE_STATE_ONLINE)
+
+                # Try to read data with timeout
+                try:
+                    data = await asyncio.wait_for(
+                        self._reader.read(1024),
+                        timeout=RECEIVE_LOOP_TIMEOUT,
+                    )
+
+                    if not data:
+                        # Empty read means connection closed
+                        _LOGGER.debug("Empty read from %s, connection closed", self._ip)
+                        await self._close_connection()
+                        continue
+
+                    # Process received data
+                    await self._process_received_data(data)
+                    self._last_activity = time.monotonic()
+
+                except TimeoutError:
+                    # No data received within timeout - this is normal
+                    # Use this opportunity to send a heartbeat if needed
+                    if self.needs_heartbeat():
+                        _LOGGER.debug("Sending heartbeat in receive loop for %s", self._ip)
+                        await self._send_heartbeat_internal()
+
+            except asyncio.CancelledError:
+                _LOGGER.debug("Receive loop cancelled for %s", self._ip)
+                break
+            except Exception as e:
+                _LOGGER.warning("Receive loop error for %s: %s", self._ip, e)
+                await self._close_connection()
+                await asyncio.sleep(RECEIVE_LOOP_RETRY_DELAY)
+
+        _LOGGER.debug("Receive loop ended for %s", self._ip)
+
+    async def _process_received_data(self, data: bytes) -> None:
+        """Process data received from the device.
+
+        This parses incoming JSON messages and dispatches state updates
+        to registered callbacks.
+
+        Args:
+            data: Raw bytes received from the device.
+        """
+        try:
+            data_str = data.decode("utf-8", errors="ignore")
+            _LOGGER.debug(
+                "Received push data from %s: %s",
+                self._ip,
+                data_str.replace("\n", "\\n").replace("\r", "\\r"),
+            )
+
+            # Parse newline-delimited JSON
+            for line in data_str.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    parsed = json.loads(line)
+                    if not isinstance(parsed, dict):
+                        continue
+
+                    msg = parsed.get("msg")
+                    if msg and isinstance(msg, dict):
+                        data_payload = msg.get("data")
+                        if data_payload and isinstance(data_payload, dict):
+                            _LOGGER.debug(
+                                "Push state update from %s: %s",
+                                self._ip,
+                                data_payload,
+                            )
+                            self._mark_communication_success()
+                            self._dispatch_state(data_payload)
+
+                except json.JSONDecodeError:
+                    continue
+
+        except Exception as e:
+            _LOGGER.debug("Error processing received data from %s: %s", self._ip, e)
+
+    async def _send_heartbeat_internal(self) -> bool:
+        """Send heartbeat query without using the public query method.
+
+        This is used within the receive loop to avoid lock contention.
+
+        Returns:
+            True if heartbeat succeeded.
+        """
+        try:
+            if not self._writer or self._writer.is_closing():
+                return False
+
+            # Send a query command
+            self._writer.write(self._get_package(CMD_QUERY, {}))
+            await asyncio.wait_for(self._writer.drain(), timeout=self._command_timeout)
+            self._last_activity = time.monotonic()
+            return True
+        except Exception as e:
+            _LOGGER.debug("Heartbeat send failed for %s: %s", self._ip, e)
+            return False
+
+    async def _handle_disconnection(self) -> None:
+        """Handle device disconnection and trigger reconnection.
+
+        This method is called when the receive loop detects that the
+        connection has been lost.
+        """
+        if self._is_closing:
+            return
+
+        _LOGGER.info(
+            "Device %s (%s) disconnected, starting reconnection",
+            self._info.device_id or "unknown",
+            self._ip,
+        )
+        self._set_device_state(DEVICE_STATE_CONNECTING)
+
+        # Start reconnection loop
+        await self._reconnect_loop()
+
+    async def _reconnect_loop(self) -> None:
+        """Continuously attempt to reconnect to the device.
+
+        Uses exponential backoff between attempts. Never gives up - keeps
+        trying until the device responds or the client is closed.
+        """
+        self._reconnect_delay = RECONNECT_MIN_INTERVAL
+
+        while not self._is_closing:
+            _LOGGER.debug(
+                "Attempting reconnection to %s (delay: %.1fs)",
+                self._ip,
+                self._reconnect_delay,
+            )
+
+            try:
+                # Try to connect
+                connected = await self.connect(force=True)
+
+                if connected:
+                    _LOGGER.info(
+                        "Reconnected to %s (%s)",
+                        self._ip,
+                        self._info.device_id or "unknown",
+                    )
+                    self._reconnect_delay = RECONNECT_MIN_INTERVAL
+                    self._set_device_state(DEVICE_STATE_ONLINE)
+
+                    # Query current state after reconnection
+                    state = await self.query()
+                    if state:
+                        self._dispatch_state(state)
+
+                    return  # Success, exit reconnect loop
+
+                # Connection failed, increase backoff
+                self._reconnect_delay = min(
+                    self._reconnect_delay * RECONNECT_BACKOFF_FACTOR,
+                    RECONNECT_MAX_INTERVAL,
+                )
+
+            except asyncio.CancelledError:
+                _LOGGER.debug("Reconnection cancelled for %s", self._ip)
+                break
+            except Exception as e:
+                _LOGGER.debug("Reconnection error for %s: %s", self._ip, e)
+                self._reconnect_delay = min(
+                    self._reconnect_delay * RECONNECT_BACKOFF_FACTOR,
+                    RECONNECT_MAX_INTERVAL,
+                )
+
+            # Wait before next attempt
+            try:
+                await asyncio.sleep(self._reconnect_delay)
+            except asyncio.CancelledError:
+                break
+
+    def update_ip(self, new_ip: str) -> bool:
+        """Update the device IP address.
+
+        This is called when re-discovery finds the device at a new IP.
+        The connection will be reset to use the new IP.
+
+        Args:
+            new_ip: The new IP address for this device.
+
+        Returns:
+            True if the IP was changed, False if it was the same.
+        """
+        if new_ip == self._ip:
+            return False
+
+        old_ip = self._ip
+        self._ip = new_ip
+        _LOGGER.info(
+            "Device %s IP changed: %s -> %s",
+            self._info.device_id or "unknown",
+            old_ip,
+            new_ip,
+        )
+
+        # Reset retry state for fresh connection attempt
+        self._retry_count = 0
+        self._next_retry_time = 0.0
+        self._reconnect_delay = RECONNECT_MIN_INTERVAL
+
+        return True
+
+    async def reconnect_with_new_ip(self, new_ip: str) -> bool:
+        """Reconnect to the device at a new IP address.
+
+        Args:
+            new_ip: The new IP address.
+
+        Returns:
+            True if reconnection succeeded.
+        """
+        if not self.update_ip(new_ip):
+            # Same IP, just try to reconnect
+            pass
+
+        # Close existing connection
+        await self._close_connection()
+
+        # Try to connect
+        return await self.connect(force=True)
 
 
 # Backward compatibility alias

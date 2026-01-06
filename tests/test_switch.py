@@ -15,6 +15,7 @@ class TestCozyLifeSwitch:
     @pytest.fixture
     def mock_tcp_client(self):
         """Create a mock TCP client."""
+        from custom_components.hass_cozylife_local_pull.const import DEVICE_STATE_ONLINE
         client = MagicMock(spec=tcp_client)
         client.device_id = "test_switch_456"
         client.device_name = "Kitchen Switch"  # User-given name from CozyLife app
@@ -22,6 +23,8 @@ class TestCozyLifeSwitch:
         client.device_type_code = "00"
         client.dpid = ['1']
         client.available = True
+        client.device_state = DEVICE_STATE_ONLINE  # New property for availability
+        client.last_state = None  # No initial state
         client.connect = AsyncMock(return_value=True)
         client.query = AsyncMock(return_value={'1': 255})
         client.control = AsyncMock(return_value=True)
@@ -52,12 +55,15 @@ class TestCozyLifeSwitch:
 
         await switch.async_added_to_hass()
 
+        # Connect is called if not already connected
         mock_tcp_client.connect.assert_called_once()
-        mock_tcp_client.query.assert_called_once()
+        # Query is no longer called in async_added_to_hass (uses dispatcher pattern)
 
     async def test_switch_async_update_on(self, mock_tcp_client):
         """Test switch state update when on."""
+        from custom_components.hass_cozylife_local_pull.const import DEVICE_STATE_ONLINE
         mock_tcp_client.query = AsyncMock(return_value={'1': 255})
+        mock_tcp_client.device_state = DEVICE_STATE_ONLINE
         switch = CozyLifeSwitch(mock_tcp_client)
 
         await switch.async_update()
@@ -66,7 +72,9 @@ class TestCozyLifeSwitch:
 
     async def test_switch_async_update_off(self, mock_tcp_client):
         """Test switch state update when off."""
+        from custom_components.hass_cozylife_local_pull.const import DEVICE_STATE_ONLINE
         mock_tcp_client.query = AsyncMock(return_value={'1': 0})
+        mock_tcp_client.device_state = DEVICE_STATE_ONLINE
         switch = CozyLifeSwitch(mock_tcp_client)
 
         await switch.async_update()
@@ -75,7 +83,9 @@ class TestCozyLifeSwitch:
 
     async def test_switch_async_update_no_data(self, mock_tcp_client):
         """Test switch state update with no data."""
+        from custom_components.hass_cozylife_local_pull.const import DEVICE_STATE_ONLINE
         mock_tcp_client.query = AsyncMock(return_value={})
+        mock_tcp_client.device_state = DEVICE_STATE_ONLINE
         switch = CozyLifeSwitch(mock_tcp_client)
         switch._attr_is_on = True
 
@@ -86,8 +96,10 @@ class TestCozyLifeSwitch:
 
     async def test_switch_turn_on(self, mock_tcp_client, mock_hass):
         """Test turning switch on."""
+        from custom_components.hass_cozylife_local_pull.const import DEVICE_STATE_ONLINE
         # Mock query to return "on" state after command
         mock_tcp_client.query = AsyncMock(return_value={'1': 255})
+        mock_tcp_client.device_state = DEVICE_STATE_ONLINE
         switch = CozyLifeSwitch(mock_tcp_client)
         switch.hass = mock_hass
         switch.async_write_ha_state = MagicMock()
@@ -102,8 +114,10 @@ class TestCozyLifeSwitch:
 
     async def test_switch_turn_off(self, mock_tcp_client, mock_hass):
         """Test turning switch off."""
+        from custom_components.hass_cozylife_local_pull.const import DEVICE_STATE_ONLINE
         # Mock query to return "off" state after command
         mock_tcp_client.query = AsyncMock(return_value={'1': 0})
+        mock_tcp_client.device_state = DEVICE_STATE_ONLINE
         switch = CozyLifeSwitch(mock_tcp_client)
         switch.hass = mock_hass
         switch.async_write_ha_state = MagicMock()
@@ -144,12 +158,17 @@ class TestCozyLifeSwitch:
 
     async def test_switch_available(self, mock_tcp_client):
         """Test switch availability."""
+        from custom_components.hass_cozylife_local_pull.const import (
+            DEVICE_STATE_ONLINE,
+            DEVICE_STATE_OFFLINE,
+        )
         switch = CozyLifeSwitch(mock_tcp_client)
 
-        mock_tcp_client.available = True
+        # Test with device_state (new pattern)
+        mock_tcp_client.device_state = DEVICE_STATE_ONLINE
         assert switch.available is True
 
-        mock_tcp_client.available = False
+        mock_tcp_client.device_state = DEVICE_STATE_OFFLINE
         assert switch.available is False
 
     async def test_switch_properties(self, mock_tcp_client):

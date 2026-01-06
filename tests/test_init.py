@@ -7,6 +7,32 @@ from custom_components.hass_cozylife_local_pull import async_setup, async_setup_
 from custom_components.hass_cozylife_local_pull.const import DOMAIN
 
 
+def create_mock_client(ip: str = "192.168.1.100", device_type: str = "01"):
+    """Create a properly configured mock TcpClient."""
+    mock_client = MagicMock()
+    mock_client.connect = AsyncMock(return_value=True)
+    mock_client.disconnect = AsyncMock()
+    mock_client.start_persistent_connection = AsyncMock()
+    mock_client.stop_persistent_connection = AsyncMock()
+    mock_client.register_state_callback = MagicMock()
+    mock_client.device_type_code = device_type
+    mock_client.device_id = f"device_{ip.replace('.', '_')}"
+    mock_client.ip = ip
+    mock_client._ip = ip
+    mock_client.available = True
+    return mock_client
+
+
+def create_mock_coordinator():
+    """Create a properly configured mock DeviceCoordinator."""
+    mock_coordinator = MagicMock()
+    mock_coordinator.start = AsyncMock()
+    mock_coordinator.stop = AsyncMock()
+    mock_coordinator.add_device = AsyncMock(return_value=True)
+    mock_coordinator.clients = []
+    return mock_coordinator
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 class TestIntegrationSetup:
@@ -24,11 +50,8 @@ class TestIntegrationSetup:
         mock_async_get_pid_list, mock_get_sn
     ):
         """Test setup entry with UDP discovery."""
-        mock_client = MagicMock()
-        mock_client.connect = AsyncMock(return_value=True)
-        mock_client.disconnect = AsyncMock()
-        mock_client.device_type_code = "01"
-        mock_client._ip = "192.168.1.100"
+        mock_client = create_mock_client("192.168.1.100")
+        mock_coordinator = create_mock_coordinator()
 
         with patch(
             'custom_components.hass_cozylife_local_pull.get_ip',
@@ -39,6 +62,9 @@ class TestIntegrationSetup:
         ), patch(
             'custom_components.hass_cozylife_local_pull.TcpClient',
             return_value=mock_client
+        ), patch(
+            'custom_components.hass_cozylife_local_pull.DeviceCoordinator',
+            return_value=mock_coordinator
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
         ), patch.object(
@@ -49,20 +75,19 @@ class TestIntegrationSetup:
             assert result is True
             assert DOMAIN in hass.data
             assert mock_config_entry.entry_id in hass.data[DOMAIN]
+            mock_coordinator.start.assert_called_once()
 
             # Clean up
             await async_unload_entry(hass, mock_config_entry)
+            mock_coordinator.stop.assert_called_once()
 
     async def test_async_setup_entry_with_hostname_discovery(
         self, hass: HomeAssistant, mock_config_entry,
         mock_async_get_pid_list, mock_get_sn
     ):
         """Test setup entry with hostname discovery."""
-        mock_client = MagicMock()
-        mock_client.connect = AsyncMock(return_value=True)
-        mock_client.disconnect = AsyncMock()
-        mock_client.device_type_code = "01"
-        mock_client._ip = "192.168.1.101"
+        mock_client = create_mock_client("192.168.1.101")
+        mock_coordinator = create_mock_coordinator()
 
         with patch(
             'custom_components.hass_cozylife_local_pull.get_ip',
@@ -73,6 +98,9 @@ class TestIntegrationSetup:
         ), patch(
             'custom_components.hass_cozylife_local_pull.TcpClient',
             return_value=mock_client
+        ), patch(
+            'custom_components.hass_cozylife_local_pull.DeviceCoordinator',
+            return_value=mock_coordinator
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
         ), patch.object(
@@ -100,10 +128,8 @@ class TestIntegrationSetup:
             title="CozyLife Local",
         )
 
-        mock_client = MagicMock()
-        mock_client.connect = AsyncMock(return_value=True)
-        mock_client.disconnect = AsyncMock()
-        mock_client.device_type_code = "01"
+        mock_client = create_mock_client("192.168.1.200")
+        mock_coordinator = create_mock_coordinator()
 
         with patch(
             'custom_components.hass_cozylife_local_pull.get_ip',
@@ -114,6 +140,9 @@ class TestIntegrationSetup:
         ), patch(
             'custom_components.hass_cozylife_local_pull.TcpClient',
             return_value=mock_client
+        ), patch(
+            'custom_components.hass_cozylife_local_pull.DeviceCoordinator',
+            return_value=mock_coordinator
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
         ), patch.object(
@@ -132,12 +161,17 @@ class TestIntegrationSetup:
         mock_async_get_pid_list, mock_get_sn
     ):
         """Test setup entry when no devices are found."""
+        mock_coordinator = create_mock_coordinator()
+
         with patch(
             'custom_components.hass_cozylife_local_pull.get_ip',
             return_value=[]
         ), patch(
             'custom_components.hass_cozylife_local_pull.async_discover_devices',
             return_value=[]
+        ), patch(
+            'custom_components.hass_cozylife_local_pull.DeviceCoordinator',
+            return_value=mock_coordinator
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
         ), patch.object(
@@ -155,9 +189,9 @@ class TestIntegrationSetup:
         self, hass: HomeAssistant, mock_config_entry
     ):
         """Test unloading a config entry."""
-        # Setup the entry first with a mock cancel function
-        mock_cancel = MagicMock()
-        hass.data[DOMAIN] = {mock_config_entry.entry_id: {'tcp_client': [], 'cancel_health_check': mock_cancel}}
+        # Setup the entry first with a mock coordinator
+        mock_coordinator = create_mock_coordinator()
+        hass.data[DOMAIN] = {mock_config_entry.entry_id: {'coordinator': mock_coordinator, 'tcp_client': []}}
 
         with patch(
             'homeassistant.config_entries.ConfigEntries.async_unload_platforms',
@@ -167,7 +201,7 @@ class TestIntegrationSetup:
 
         assert result is True
         assert mock_config_entry.entry_id not in hass.data[DOMAIN]
-        mock_cancel.assert_called_once()
+        mock_coordinator.stop.assert_called_once()
 
     async def test_async_setup_entry_merges_discovery_methods(
         self, hass: HomeAssistant, mock_config_entry,
@@ -183,10 +217,8 @@ class TestIntegrationSetup:
             title="CozyLife Local",
         )
 
-        mock_client = MagicMock()
-        mock_client.connect = AsyncMock(return_value=True)
-        mock_client.disconnect = AsyncMock()
-        mock_client.device_type_code = "01"
+        mock_client = create_mock_client("192.168.1.100")
+        mock_coordinator = create_mock_coordinator()
 
         with patch(
             'custom_components.hass_cozylife_local_pull.get_ip',
@@ -197,6 +229,9 @@ class TestIntegrationSetup:
         ), patch(
             'custom_components.hass_cozylife_local_pull.TcpClient',
             return_value=mock_client
+        ), patch(
+            'custom_components.hass_cozylife_local_pull.DeviceCoordinator',
+            return_value=mock_coordinator
         ), patch.object(
             hass.config_entries, 'async_forward_entry_setups', new_callable=AsyncMock
         ), patch.object(

@@ -95,5 +95,31 @@ REDISCOVERY_ON_FAILURE_THRESHOLD = 5  # Trigger re-discovery after this many con
 HEARTBEAT_INTERVAL = 60  # Send heartbeat query every 60 seconds
 HEARTBEAT_TIMEOUT = 5  # Timeout for heartbeat response
 
+# Persistent connection configuration
+# These settings control the always-on receive loop that listens for device push updates
+RECEIVE_LOOP_TIMEOUT = 30.0  # Timeout for receive loop read (allows periodic checks)
+RECEIVE_LOOP_RETRY_DELAY = 5.0  # Delay before retrying receive loop after error
+
+# Smart reconnection configuration
+# When a device goes offline, we keep trying to reconnect indefinitely
+# The reconnection uses exponential backoff but never gives up completely
+RECONNECT_MIN_INTERVAL = 5  # Minimum time between reconnection attempts (seconds)
+RECONNECT_MAX_INTERVAL = 300  # Maximum backoff interval (5 minutes)
+RECONNECT_BACKOFF_FACTOR = 1.5  # Backoff multiplier
+DEVICE_OFFLINE_THRESHOLD = 3  # Number of failures before marking device offline
+DEVICE_REDISCOVERY_INTERVAL = 120  # How often to trigger re-discovery for offline devices (seconds)
+
+# Device state constants
+DEVICE_STATE_ONLINE = "online"
+DEVICE_STATE_OFFLINE = "offline"
+DEVICE_STATE_CONNECTING = "connecting"
+DEVICE_STATE_UNKNOWN = "unknown"
+
+# Dispatcher signal prefixes
+SIGNAL_DEVICE_STATE = f"{DOMAIN}_device_state"  # Signal for device state updates
+SIGNAL_DEVICE_CONNECTED = f"{DOMAIN}_device_connected"  # Signal when device connects
+SIGNAL_DEVICE_DISCONNECTED = f"{DOMAIN}_device_disconnected"  # Signal when device disconnects
+
 # Cache keys for hass.data
 CACHE_PID_LIST = "pid_list"
+CACHE_DEVICE_REGISTRY = "device_registry"  # Maps device_id -> device info including IP

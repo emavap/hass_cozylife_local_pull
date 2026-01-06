@@ -21,6 +21,7 @@ class TestCozyLifeLight:
     @pytest.fixture
     def mock_tcp_client(self):
         """Create a mock TCP client."""
+        from custom_components.hass_cozylife_local_pull.const import DEVICE_STATE_ONLINE
         client = MagicMock(spec=tcp_client)
         client.device_id = "test_light_123"
         client.device_name = "Living Room Light"  # User-given name from CozyLife app
@@ -28,6 +29,8 @@ class TestCozyLifeLight:
         client.device_type_code = "01"
         client.dpid = ['1', '2', '3', '4', '5', '6']
         client.available = True
+        client.device_state = DEVICE_STATE_ONLINE  # New property for availability
+        client.last_state = None  # No initial state
         client.connect = AsyncMock(return_value=True)
         client.query = AsyncMock(return_value={
             '1': 255,
@@ -198,12 +201,17 @@ class TestCozyLifeLight:
 
     async def test_light_available(self, mock_tcp_client):
         """Test light availability."""
+        from custom_components.hass_cozylife_local_pull.const import (
+            DEVICE_STATE_ONLINE,
+            DEVICE_STATE_OFFLINE,
+        )
         light = CozyLifeLight(mock_tcp_client)
 
-        mock_tcp_client.available = True
+        # Test with device_state (new pattern)
+        mock_tcp_client.device_state = DEVICE_STATE_ONLINE
         assert light.available is True
 
-        mock_tcp_client.available = False
+        mock_tcp_client.device_state = DEVICE_STATE_OFFLINE
         assert light.available is False
 
     async def test_light_properties(self, mock_tcp_client):
