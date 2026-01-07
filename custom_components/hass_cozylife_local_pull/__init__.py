@@ -221,6 +221,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # Create TCP clients for each discovered IP with configured timeouts
+    # Mark devices with configured IPs for aggressive reconnection
+    ip_config_set = set(ip_config)  # Set of manually configured IPs
     clients: list[TcpClient] = [
         TcpClient(
             ip,
@@ -228,9 +230,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             connection_timeout=connection_timeout,
             command_timeout=command_timeout,
             response_timeout=response_timeout,
+            is_configured=(ip in ip_config_set),  # Enable aggressive reconnect for configured IPs
         )
         for ip in ip_list
     ]
+
+    if ip_config_set:
+        _LOGGER.info(
+            "Configured IPs with aggressive reconnection: %s",
+            ", ".join(ip_config_set)
+        )
 
     # Connect to devices to get info with retries for initial setup
     # Some devices may need multiple attempts during startup

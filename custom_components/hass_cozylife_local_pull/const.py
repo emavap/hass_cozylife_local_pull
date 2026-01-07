@@ -104,10 +104,22 @@ RECEIVE_LOOP_RETRY_DELAY = 5.0  # Delay before retrying receive loop after error
 # When a device goes offline, we keep trying to reconnect indefinitely
 # The reconnection uses exponential backoff but never gives up completely
 RECONNECT_MIN_INTERVAL = 5  # Minimum time between reconnection attempts (seconds)
-RECONNECT_MAX_INTERVAL = 300  # Maximum backoff interval (5 minutes)
+RECONNECT_MAX_INTERVAL = 60  # Maximum backoff interval (1 minute) - reduced for faster recovery
 RECONNECT_BACKOFF_FACTOR = 1.5  # Backoff multiplier
 DEVICE_OFFLINE_THRESHOLD = 3  # Number of failures before marking device offline
 DEVICE_REDISCOVERY_INTERVAL = 120  # How often to trigger re-discovery for offline devices (seconds)
+
+# Network recovery detection
+# When we detect network errors (vs device errors), we use faster retry intervals
+NETWORK_ERROR_RETRY_INTERVAL = 10  # Retry interval after network errors (seconds)
+NETWORK_PROBE_INTERVAL = 30  # How often to probe for network recovery (seconds)
+
+# Aggressive reconnection for configured devices
+# Devices with configured (known) IPs can use more aggressive reconnection
+# since we're not scanning the network, just connecting to a known address
+CONFIGURED_DEVICE_MIN_RETRY = 3  # Minimum retry interval for configured devices (seconds)
+CONFIGURED_DEVICE_MAX_RETRY = 30  # Maximum retry interval for configured devices (seconds)
+CONFIGURED_DEVICE_IMMEDIATE_RETRY = True  # Try to reconnect immediately on first failure
 
 # Device state constants
 DEVICE_STATE_ONLINE = "online"

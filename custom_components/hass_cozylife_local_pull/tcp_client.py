@@ -37,6 +37,11 @@ from .const import (
     SIGNAL_DEVICE_STATE,
     SIGNAL_DEVICE_CONNECTED,
     SIGNAL_DEVICE_DISCONNECTED,
+    NETWORK_ERROR_RETRY_INTERVAL,
+    NETWORK_PROBE_INTERVAL,
+    CONFIGURED_DEVICE_MIN_RETRY,
+    CONFIGURED_DEVICE_MAX_RETRY,
+    CONFIGURED_DEVICE_IMMEDIATE_RETRY,
 )
 from .utils import async_get_pid_list, get_sn
 
@@ -79,6 +84,7 @@ class TcpClient:
         connection_timeout: float | None = None,
         command_timeout: float | None = None,
         response_timeout: float | None = None,
+        is_configured: bool = False,
     ) -> None:
         """Initialize the TCP client.
 
@@ -88,6 +94,8 @@ class TcpClient:
             connection_timeout: Timeout for establishing connection (seconds).
             command_timeout: Timeout for sending commands (seconds).
             response_timeout: Timeout for waiting for responses (seconds).
+            is_configured: Whether this device has a configured (known) IP address.
+                          Configured devices use more aggressive reconnection.
         """
         self._ip: str = ip
         self._hass: HomeAssistant | None = hass
@@ -126,6 +134,17 @@ class TcpClient:
         # Reconnection backoff state (used by receive loop for reconnection)
         self._reconnect_delay: float = RECONNECT_MIN_INTERVAL
         self._last_ip_change_check: float = 0.0
+
+        # Network error tracking for smarter reconnection
+        # Network errors (OSError, network unreachable) are different from device errors
+        # (connection refused, timeout with device responding) and should use faster retry
+        self._last_error_is_network: bool = False
+        self._last_network_probe: float = 0.0
+
+        # Configured device flag - enables aggressive reconnection
+        # Configured devices have known IPs and can be reconnected more aggressively
+        self._is_configured: bool = is_configured
+        self._first_failure_after_success: bool = True  # Track if this is first failure
 
     async def connect(self, force: bool = False) -> bool:
         """Establish connection to device with improved error handling.
@@ -219,12 +238,14 @@ class TcpClient:
                 return False
             except OSError as e:
                 # Network unreachable, host unreachable, etc.
+                # These are network-level errors that indicate the network path is broken
                 _LOGGER.debug("Network error connecting to %s: %s (attempt %d/%d)",
                             self._ip, e, attempt + 1, max_quick_retries)
                 if attempt < max_quick_retries - 1:
                     await asyncio.sleep(0.5)
                     continue
-                self._handle_connection_failure(f"Network error: {e}")
+                # Mark as network error for faster retry when network recovers
+                self._handle_connection_failure(f"Network error: {e}", is_network_error=True)
                 return False
             except Exception as e:
                 _LOGGER.debug("Unexpected error connecting to %s: %s", self._ip, e)
@@ -233,13 +254,17 @@ class TcpClient:
 
         return False
 
-    def _handle_connection_failure(self, error: str) -> None:
+    def _handle_connection_failure(self, error: str, is_network_error: bool = False) -> None:
         """Handle connection failure with exponential backoff.
 
         Args:
             error: Error message describing the failure.
+            is_network_error: True if the error is network-related (unreachable, no route)
+                              vs device-related (refused, timeout). Network errors use
+                              faster retry since they indicate the whole network is down.
         """
         self._last_error = error
+        self._last_error_is_network = is_network_error
         self._retry_count = min(self._retry_count + 1, MAX_RETRY_ATTEMPTS)
         self._consecutive_failures += 1
 
@@ -255,20 +280,27 @@ class TcpClient:
             self._available = False
 
         # Calculate next retry time with exponential backoff
-        delay = min(
-            INITIAL_RETRY_DELAY * (RETRY_BACKOFF_FACTOR ** (self._retry_count - 1)),
-            MAX_RETRY_DELAY,
-        )
+        # Use shorter backoff for network errors - the network may recover at any time
+        if is_network_error:
+            # For network errors, use a fixed shorter retry interval
+            # We want to detect network recovery quickly
+            delay = NETWORK_ERROR_RETRY_INTERVAL
+        else:
+            delay = min(
+                INITIAL_RETRY_DELAY * (RETRY_BACKOFF_FACTOR ** (self._retry_count - 1)),
+                MAX_RETRY_DELAY,
+            )
         self._next_retry_time = time.monotonic() + delay
 
         _LOGGER.debug(
-            "Connection failed to %s: %s (failures: %d, retry %d/%d, next in %.1fs)",
+            "Connection failed to %s: %s (failures: %d, retry %d/%d, next in %.1fs, network_error=%s)",
             self._ip,
             error,
             self._consecutive_failures,
             self._retry_count,
             MAX_RETRY_ATTEMPTS,
             delay,
+            is_network_error,
         )
 
     def _configure_socket_keepalive(self) -> None:
@@ -1077,6 +1109,30 @@ class TcpClient:
         """
         return self._ip
 
+    @property
+    def is_configured(self) -> bool:
+        """Return whether this device has a configured (known) IP.
+
+        Configured devices use more aggressive reconnection since we know
+        exactly where to find them.
+
+        Returns:
+            True if the device IP was manually configured.
+        """
+        return self._is_configured
+
+    def set_configured(self, configured: bool = True) -> None:
+        """Mark this device as having a configured (known) IP.
+
+        This enables aggressive reconnection mode with shorter retry intervals.
+
+        Args:
+            configured: Whether the device is configured.
+        """
+        if configured and not self._is_configured:
+            _LOGGER.debug("Enabling aggressive reconnection for %s", self._ip)
+        self._is_configured = configured
+
     def register_state_callback(
         self, callback: Callable[[str, dict[str, Any]], None]
     ) -> Callable[[], None]:
@@ -1133,6 +1189,67 @@ class TcpClient:
                 new_state,
             )
 
+    def _calculate_reconnect_delay(self) -> float:
+        """Calculate the delay before next reconnection attempt.
+
+        Uses different strategies based on:
+        - Whether this is a configured device (aggressive reconnection)
+        - Whether the error is network-related (faster retry)
+        - Whether this is the first failure (immediate retry for configured devices)
+
+        Returns:
+            Delay in seconds before next reconnection attempt.
+        """
+        # For configured devices, use aggressive reconnection
+        if self._is_configured:
+            # Immediate retry on first failure after success (for configured devices)
+            if self._first_failure_after_success and CONFIGURED_DEVICE_IMMEDIATE_RETRY:
+                self._first_failure_after_success = False
+                _LOGGER.debug(
+                    "Immediate reconnect for configured device %s (first failure)",
+                    self._ip,
+                )
+                return 0.5  # Very short delay, just to avoid tight loop
+
+            # Use shorter intervals for configured devices
+            wait_delay = min(
+                self._reconnect_delay,
+                CONFIGURED_DEVICE_MAX_RETRY,
+            )
+            # Increase backoff but cap at configured device max
+            self._reconnect_delay = min(
+                self._reconnect_delay * RECONNECT_BACKOFF_FACTOR,
+                CONFIGURED_DEVICE_MAX_RETRY,
+            )
+            _LOGGER.debug(
+                "Aggressive reconnect for configured device %s, waiting %.1fs",
+                self._ip,
+                wait_delay,
+            )
+            return wait_delay
+
+        # For network errors, use faster retry (network can recover anytime)
+        if self._last_error_is_network:
+            _LOGGER.debug(
+                "Reconnect for %s (network error), waiting %.1fs",
+                self._ip,
+                NETWORK_ERROR_RETRY_INTERVAL,
+            )
+            return NETWORK_ERROR_RETRY_INTERVAL
+
+        # Standard backoff for regular device errors
+        wait_delay = self._reconnect_delay
+        self._reconnect_delay = min(
+            self._reconnect_delay * RECONNECT_BACKOFF_FACTOR,
+            RECONNECT_MAX_INTERVAL,
+        )
+        _LOGGER.debug(
+            "Reconnect for %s, waiting %.1fs",
+            self._ip,
+            wait_delay,
+        )
+        return wait_delay
+
     async def start_persistent_connection(self) -> None:
         """Start the persistent connection and receive loop.
 
@@ -1148,7 +1265,7 @@ class TcpClient:
             _LOGGER.debug("Receive loop already running for %s", self._ip)
             return
 
-        _LOGGER.info("Starting persistent connection for %s", self._ip)
+        _LOGGER.info("Starting persistent connection for %s (configured=%s)", self._ip, self._is_configured)
         self._is_closing = False
         self._receive_loop_task = asyncio.create_task(self._receive_loop())
 
@@ -1182,8 +1299,10 @@ class TcpClient:
         - Receiving push updates from the device
         - Detecting connection loss
         - Automatic reconnection with exponential backoff
+        - Faster recovery after network errors (WiFi outage, etc.)
+        - Aggressive reconnection for configured devices
         """
-        _LOGGER.debug("Receive loop started for %s", self._ip)
+        _LOGGER.debug("Receive loop started for %s (configured=%s)", self._ip, self._is_configured)
 
         while not self._is_closing:
             try:
@@ -1201,34 +1320,32 @@ class TcpClient:
                                 self._info.device_id or "unknown",
                             )
                             self._set_device_state(DEVICE_STATE_ONLINE)
+                            # Reset reconnect delay on successful connection
                             self._reconnect_delay = RECONNECT_MIN_INTERVAL
+                            self._last_error_is_network = False
+                            self._first_failure_after_success = True  # Reset for next failure
 
                             # Query current state after connection
                             state = await self.query()
                             if state:
                                 self._dispatch_state(state)
                         else:
-                            # Connection failed, wait with backoff then try again
+                            # Connection failed, calculate wait delay
                             self._set_device_state(DEVICE_STATE_OFFLINE)
-                            _LOGGER.debug(
-                                "Receive loop connect failed for %s, waiting %.1fs",
-                                self._ip,
-                                self._reconnect_delay,
-                            )
-                            await asyncio.sleep(self._reconnect_delay)
-                            self._reconnect_delay = min(
-                                self._reconnect_delay * RECONNECT_BACKOFF_FACTOR,
-                                RECONNECT_MAX_INTERVAL,
-                            )
+                            wait_delay = self._calculate_reconnect_delay()
+                            await asyncio.sleep(wait_delay)
                             continue
                     except Exception as e:
                         _LOGGER.debug("Receive loop connect error for %s: %s", self._ip, e)
                         self._set_device_state(DEVICE_STATE_OFFLINE)
-                        await asyncio.sleep(self._reconnect_delay)
-                        self._reconnect_delay = min(
-                            self._reconnect_delay * RECONNECT_BACKOFF_FACTOR,
-                            RECONNECT_MAX_INTERVAL,
-                        )
+
+                        # Check if this looks like a network error
+                        is_network_error = isinstance(e, OSError) or "network" in str(e).lower()
+                        if is_network_error:
+                            self._last_error_is_network = True
+
+                        wait_delay = self._calculate_reconnect_delay()
+                        await asyncio.sleep(wait_delay)
                         continue
 
                 # Phase 2: Read data from connection
@@ -1269,9 +1386,11 @@ class TcpClient:
                             continue
 
                 except (ConnectionError, OSError) as e:
-                    # Connection error during read
+                    # Connection error during read - likely network issue
                     _LOGGER.debug("Connection error for %s: %s", self._ip, e)
                     self._mark_communication_failure(str(e))
+                    # Mark as network error for faster retry
+                    self._last_error_is_network = True
                     await self._close_connection()
                     continue
 

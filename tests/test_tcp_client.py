@@ -170,7 +170,9 @@ class TestTCPClient:
 
         assert client._writer is None
         assert client._reader is None
-        assert client.available is False
+        # Note: _available is intentionally NOT set to False in _close_connection()
+        # to prevent flapping - availability is managed by failure tracking
+        assert client._available is True  # Unchanged by _close_connection
         mock_writer.close.assert_called_once()
         mock_writer.wait_closed.assert_called_once()
 
